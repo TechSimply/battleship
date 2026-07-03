@@ -1,7 +1,9 @@
 {
-  "name": "battleship",
-  "short_name": "battleship",
+  "name": "Battleship",
+  "short_name": "Battleship",
   "display": "standalone",
+  "background_color": "#05090f",
+  "theme_color": "#05090f",
   "scope": "./",
   "start_url": "./",
   "icons": [
