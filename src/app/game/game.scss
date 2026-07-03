@@ -17,7 +17,8 @@ h1 {
   font-weight: 600;
 }
 
-// Mobile first: boards stacked vertically for portrait screens.
+// Rule 2.2: two boards are positioned vertically, one on top of another —
+// on every screen size, not just phones.
 .boards {
   display: flex;
   flex-direction: column;
@@ -51,7 +52,7 @@ h1 {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 5px;
-  width: min(62vw, 230px);
+  width: min(72vw, 260px);
 }
 
 .cell {
@@ -85,16 +86,6 @@ h1 {
   &.move-target {
     background: #9ecbf0;
     box-shadow: inset 0 0 0 2px #2b6cb0;
-  }
-}
-
-// Side by side when there is room (landscape / desktop).
-@media (min-width: 560px) {
-  .boards {
-    flex-direction: row;
-    justify-content: center;
-    align-items: flex-start;
-    gap: 2rem;
   }
 }
 
