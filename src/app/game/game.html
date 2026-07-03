@@ -13,7 +13,6 @@
               [class.destroyed]="cell.destroyed"
               [class.ship]="cell.hasShip && !cell.shipDestroyed"
               [class.ship-destroyed]="cell.shipDestroyed"
-              [class.selected]="cell.selected"
               [class.exposed]="cell.exposed"
               [class.move-target]="cell.moveTarget"
               (click)="onCellClick(boardIndex, cell)"

@@ -2,33 +2,22 @@ import { Injectable, computed, signal } from '@angular/core';
 
 export const BOARD_W = 5;
 export const BOARD_H = 7;
-export const SHIPS_PER_PLAYER = 2;
-
-/**
- * Per the design notes, the game ends as soon as any ship is hit.
- * Flip to false to require destroying all of a player's ships instead.
- */
-export const WIN_ON_FIRST_HIT = true;
 
 export type PlayerId = 0 | 1;
-export type Phase = 'placement' | 'select-ship' | 'fire' | 'move' | 'gameover';
+export type Phase = 'placement' | 'fire' | 'move' | 'gameover';
 
 export interface Coord {
   x: number;
   y: number;
 }
 
-export interface Ship {
-  id: number;
-  pos: Coord;
-  /** Position the opponent saw when this ship last fired. */
-  exposedAt: Coord | null;
-  destroyed: boolean;
-}
-
 export interface PlayerState {
-  ships: Ship[];
-  /** Squares hit by a bomb are unusable forever; indexed y * BOARD_W + x. */
+  /** Each player has exactly one ship; null until placed. */
+  ship: Coord | null;
+  shipDestroyed: boolean;
+  /** Square the opponent saw when this player last fired (rule 5.2). */
+  exposedAt: Coord | null;
+  /** Bombed squares are unusable forever (rule 5.3); indexed y * BOARD_W + x. */
   destroyed: boolean[];
 }
 
@@ -36,7 +25,12 @@ const idx = (c: Coord) => c.y * BOARD_W + c.x;
 const sameCell = (a: Coord, b: Coord) => a.x === b.x && a.y === b.y;
 
 function emptyPlayer(): PlayerState {
-  return { ships: [], destroyed: Array(BOARD_W * BOARD_H).fill(false) };
+  return {
+    ship: null,
+    shipDestroyed: false,
+    exposedAt: null,
+    destroyed: Array(BOARD_W * BOARD_H).fill(false),
+  };
 }
 
 @Injectable({ providedIn: 'root' })
@@ -44,22 +38,17 @@ export class GameService {
   readonly phase = signal<Phase>('placement');
   readonly currentPlayer = signal<PlayerId>(0);
   readonly winner = signal<PlayerId | null>(null);
-  readonly selectedShipId = signal<number | null>(null);
   readonly players = signal<[PlayerState, PlayerState]>([emptyPlayer(), emptyPlayer()]);
 
   readonly message = computed(() => {
     const p = `Player ${this.currentPlayer() + 1}`;
     switch (this.phase()) {
-      case 'placement': {
-        const placed = this.players()[this.currentPlayer()].ships.length;
-        return `${p}: tap your board to place your ships (${placed}/${SHIPS_PER_PLAYER})`;
-      }
-      case 'select-ship':
-        return `${p}: tap one of your ships to fire with`;
+      case 'placement':
+        return `${p}: tap your board to place your ship`;
       case 'fire':
-        return `${p}: tap a square on the enemy board to fire (or tap another of your ships)`;
+        return `${p}: tap a square on the enemy board to fire`;
       case 'move':
-        return `${p}: your ship is exposed — move it one square`;
+        return `${p}: your position is exposed — move your ship one square`;
       case 'gameover':
         return `Player ${this.winner()! + 1} wins!`;
     }
@@ -71,10 +60,8 @@ export class GameService {
       case 'placement':
         if (board === me) this.placeShip(c);
         break;
-      case 'select-ship':
       case 'fire':
-        if (board === me) this.selectShip(c);
-        else if (this.phase() === 'fire') this.fireAt(c);
+        if (board !== me) this.fireAt(c);
         break;
       case 'move':
         if (board === me) this.moveTo(c);
@@ -82,59 +69,40 @@ export class GameService {
     }
   }
 
-  /** Legal one-square moves (up/down/left/right) for a ship on its own board. */
-  legalMoves(player: PlayerId, ship: Ship): Coord[] {
+  /** Legal one-square moves: all 8 bordering squares (rule 3) that are usable (rule 5.3). */
+  legalMoves(player: PlayerId): Coord[] {
     const state = this.players()[player];
-    const candidates: Coord[] = [
-      { x: ship.pos.x + 1, y: ship.pos.y },
-      { x: ship.pos.x - 1, y: ship.pos.y },
-      { x: ship.pos.x, y: ship.pos.y + 1 },
-      { x: ship.pos.x, y: ship.pos.y - 1 },
-    ];
-    return candidates.filter(
-      (c) =>
-        c.x >= 0 &&
-        c.x < BOARD_W &&
-        c.y >= 0 &&
-        c.y < BOARD_H &&
-        !state.destroyed[idx(c)] &&
-        !state.ships.some((s) => !s.destroyed && sameCell(s.pos, c)),
-    );
+    if (!state.ship) return [];
+    const moves: Coord[] = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const c = { x: state.ship.x + dx, y: state.ship.y + dy };
+        if (c.x < 0 || c.x >= BOARD_W || c.y < 0 || c.y >= BOARD_H) continue;
+        if (state.destroyed[idx(c)]) continue;
+        moves.push(c);
+      }
+    }
+    return moves;
   }
 
   reset(): void {
     this.phase.set('placement');
     this.currentPlayer.set(0);
     this.winner.set(null);
-    this.selectedShipId.set(null);
     this.players.set([emptyPlayer(), emptyPlayer()]);
   }
 
   private placeShip(c: Coord): void {
     const me = this.currentPlayer();
-    const state = this.players()[me];
-    if (state.ships.length >= SHIPS_PER_PLAYER) return;
-    if (state.ships.some((s) => sameCell(s.pos, c))) return;
+    this.updatePlayer(me, (p) => ({ ...p, ship: c }));
 
-    const ship: Ship = { id: state.ships.length, pos: c, exposedAt: null, destroyed: false };
-    this.updatePlayer(me, (p) => ({ ...p, ships: [...p.ships, ship] }));
-
-    if (this.players()[me].ships.length === SHIPS_PER_PLAYER) {
-      if (me === 0) {
-        this.currentPlayer.set(1);
-      } else {
-        this.currentPlayer.set(0);
-        this.phase.set('select-ship');
-      }
+    if (me === 0) {
+      this.currentPlayer.set(1);
+    } else {
+      this.currentPlayer.set(0);
+      this.phase.set('fire');
     }
-  }
-
-  private selectShip(c: Coord): void {
-    const me = this.currentPlayer();
-    const ship = this.players()[me].ships.find((s) => !s.destroyed && sameCell(s.pos, c));
-    if (!ship) return;
-    this.selectedShipId.set(ship.id);
-    this.phase.set('fire');
   }
 
   private fireAt(c: Coord): void {
@@ -146,30 +114,22 @@ export class GameService {
     this.updatePlayer(enemy, (p) => {
       const destroyed = [...p.destroyed];
       destroyed[idx(c)] = true;
-      return {
-        ...p,
-        destroyed,
-        ships: p.ships.map((s) => (sameCell(s.pos, c) ? { ...s, destroyed: true } : s)),
-      };
+      const hit = !!p.ship && sameCell(p.ship, c);
+      return { ...p, destroyed, shipDestroyed: p.shipDestroyed || hit };
     });
 
-    const hit = enemyState.ships.some((s) => !s.destroyed && sameCell(s.pos, c));
-    const enemyShipsLeft = this.players()[enemy].ships.some((s) => !s.destroyed);
-    if (hit && (WIN_ON_FIRST_HIT || !enemyShipsLeft)) {
+    // Rule 6: if the ship is hit, game over.
+    if (this.players()[enemy].shipDestroyed) {
       this.winner.set(me);
       this.phase.set('gameover');
       return;
     }
 
-    // Firing exposes the shooter's position, then it must move one square if it can.
-    const shipId = this.selectedShipId()!;
-    this.updatePlayer(me, (p) => ({
-      ...p,
-      ships: p.ships.map((s) => (s.id === shipId ? { ...s, exposedAt: { ...s.pos } } : s)),
-    }));
+    // Rule 5.2: firing exposes the square it was fired from.
+    this.updatePlayer(me, (p) => ({ ...p, exposedAt: p.ship ? { ...p.ship } : null }));
 
-    const firingShip = this.players()[me].ships.find((s) => s.id === shipId)!;
-    if (this.legalMoves(me, firingShip).length === 0) {
+    // Rule 5.4: the shooter must move, if any usable square borders it.
+    if (this.legalMoves(me).length === 0) {
       this.endTurn();
     } else {
       this.phase.set('move');
@@ -178,21 +138,14 @@ export class GameService {
 
   private moveTo(c: Coord): void {
     const me = this.currentPlayer();
-    const shipId = this.selectedShipId()!;
-    const ship = this.players()[me].ships.find((s) => s.id === shipId)!;
-    if (!this.legalMoves(me, ship).some((m) => sameCell(m, c))) return;
-
-    this.updatePlayer(me, (p) => ({
-      ...p,
-      ships: p.ships.map((s) => (s.id === shipId ? { ...s, pos: c } : s)),
-    }));
+    if (!this.legalMoves(me).some((m) => sameCell(m, c))) return;
+    this.updatePlayer(me, (p) => ({ ...p, ship: c }));
     this.endTurn();
   }
 
   private endTurn(): void {
-    this.selectedShipId.set(null);
     this.currentPlayer.update((p) => (p === 0 ? 1 : 0));
-    this.phase.set('select-ship');
+    this.phase.set('fire');
   }
 
   private updatePlayer(id: PlayerId, fn: (p: PlayerState) => PlayerState): void {

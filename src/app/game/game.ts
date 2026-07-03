@@ -1,5 +1,5 @@
 import { Component, computed, inject } from '@angular/core';
-import { BOARD_H, BOARD_W, Coord, GameService, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, GameService, PlayerId } from './game.service';
 
 interface CellVM {
   x: number;
@@ -7,7 +7,6 @@ interface CellVM {
   destroyed: boolean;
   hasShip: boolean;
   shipDestroyed: boolean;
-  selected: boolean;
   exposed: boolean;
   moveTarget: boolean;
 }
@@ -39,37 +38,25 @@ export class Game {
 
   private buildBoard(id: PlayerId): CellVM[] {
     const state = this.game.players()[id];
-    const phase = this.game.phase();
     const isMyTurn = this.game.currentPlayer() === id;
-    const selectedId = this.game.selectedShipId();
-
-    const selectedShip =
-      isMyTurn && selectedId !== null ? state.ships.find((s) => s.id === selectedId) : undefined;
     const moveTargets =
-      phase === 'move' && selectedShip ? this.game.legalMoves(id, selectedShip) : [];
+      this.game.phase() === 'move' && isMyTurn ? this.game.legalMoves(id) : [];
 
     const cells: CellVM[] = [];
     for (let y = 0; y < BOARD_H; y++) {
       for (let x = 0; x < BOARD_W; x++) {
-        const ship = state.ships.find((s) => s.pos.x === x && s.pos.y === y);
+        const hasShip = state.ship?.x === x && state.ship.y === y;
         cells.push({
           x,
           y,
           destroyed: state.destroyed[y * BOARD_W + x],
-          hasShip: !!ship,
-          shipDestroyed: !!ship?.destroyed,
-          selected: !!ship && ship.id === selectedId && isMyTurn,
-          exposed: state.ships.some(
-            (s) => s.exposedAt?.x === x && s.exposedAt.y === y && !this.sameAsShip(s, x, y),
-          ),
+          hasShip,
+          shipDestroyed: hasShip && state.shipDestroyed,
+          exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !hasShip,
           moveTarget: moveTargets.some((m) => m.x === x && m.y === y),
         });
       }
     }
     return cells;
-  }
-
-  private sameAsShip(s: { pos: Coord }, x: number, y: number): boolean {
-    return s.pos.x === x && s.pos.y === y;
   }
 }
