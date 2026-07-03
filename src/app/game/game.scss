@@ -33,8 +33,16 @@ h1 {
   }
 
   h2 {
-    margin: 0 0 0.5rem;
+    margin: 0;
     font-size: 1rem;
+  }
+
+  .hint {
+    min-height: 1.2em;
+    margin: 0.1rem 0 0.4rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #2b6cb0;
   }
 }
 

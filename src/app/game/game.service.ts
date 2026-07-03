@@ -46,7 +46,7 @@ export class GameService {
       case 'placement':
         return `${p}: tap your board to place your ship`;
       case 'fire':
-        return `${p}: tap a square on the enemy board to fire`;
+        return `${p}: fire! Tap a square on Player ${this.currentPlayer() === 0 ? 2 : 1}'s board`;
       case 'move':
         return `${p}: your position is exposed — move your ship one square`;
       case 'gameover':

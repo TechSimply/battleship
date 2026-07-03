@@ -6,6 +6,11 @@
     @for (board of boards(); track $index; let boardIndex = $index) {
       <section class="board-wrap" [class.active]="isActiveBoard(boardIndex)">
         <h2>Player {{ boardIndex + 1 }}</h2>
+        <p class="hint">
+          @if (isActiveBoard(boardIndex)) {
+            👇 Player {{ game.currentPlayer() + 1 }} taps here
+          }
+        </p>
         <div class="board">
           @for (cell of board; track cell.y * 5 + cell.x) {
             <button
