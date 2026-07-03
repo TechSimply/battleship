@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { GameService } from './game.service';
+import { BOARD_W, GameService } from './game.service';
 
 describe('GameService', () => {
   let game: GameService;
@@ -9,7 +9,7 @@ describe('GameService', () => {
     game = TestBed.inject(GameService);
   });
 
-  function placeBothShips(p1 = { x: 0, y: 0 }, p2 = { x: 4, y: 6 }) {
+  function placeBothShips(p1 = { x: 0, y: 0 }, p2 = { x: 3, y: 3 }) {
     game.handleCellClick(0, p1);
     game.handleCellClick(1, p2);
   }
@@ -24,56 +24,55 @@ describe('GameService', () => {
     expect(game.phase()).toBe('fire');
     expect(game.currentPlayer()).toBe(0);
     expect(game.players()[0].ship).toEqual({ x: 0, y: 0 });
-    expect(game.players()[1].ship).toEqual({ x: 4, y: 6 });
+    expect(game.players()[1].ship).toEqual({ x: 3, y: 3 });
   });
 
   it('ends the game when a ship is hit (rule 6)', () => {
     placeBothShips();
-    game.handleCellClick(1, { x: 4, y: 6 }); // direct hit
+    game.handleCellClick(1, { x: 3, y: 3 }); // direct hit
     expect(game.phase()).toBe('gameover');
     expect(game.winner()).toBe(0);
   });
 
   it('marks the bombed square unusable and exposes the shooter on a miss (rules 5.2, 5.3)', () => {
     placeBothShips();
-    game.handleCellClick(1, { x: 2, y: 2 }); // miss
-    expect(game.players()[1].destroyed[2 * 5 + 2]).toBe(true);
+    game.handleCellClick(1, { x: 1, y: 2 }); // miss
+    expect(game.players()[1].destroyed[2 * BOARD_W + 1]).toBe(true);
     expect(game.players()[0].exposedAt).toEqual({ x: 0, y: 0 });
     expect(game.phase()).toBe('move');
   });
 
   it('lets the shooter move to any of the 8 bordering squares (rule 3)', () => {
-    placeBothShips({ x: 2, y: 3 }); // center-ish: all 8 neighbours in bounds
+    placeBothShips({ x: 1, y: 1 }); // interior square: all 8 neighbours in bounds
     game.handleCellClick(1, { x: 0, y: 0 }); // miss -> move phase
     expect(game.legalMoves(0)).toHaveLength(8);
-    game.handleCellClick(0, { x: 3, y: 4 }); // diagonal move
-    expect(game.players()[0].ship).toEqual({ x: 3, y: 4 });
+    game.handleCellClick(0, { x: 2, y: 2 }); // diagonal move
+    expect(game.players()[0].ship).toEqual({ x: 2, y: 2 });
     expect(game.currentPlayer()).toBe(1);
     expect(game.phase()).toBe('fire');
   });
 
   it('rejects a move onto a bombed square (rule 5.4 via 5.3)', () => {
-    placeBothShips({ x: 2, y: 3 });
-    // Player 1 misses; player 2 bombs a square next to player 1's ship.
-    game.handleCellClick(1, { x: 0, y: 0 });
-    game.handleCellClick(0, { x: 3, y: 4 }); // p1 moves to (3,4)
-    game.handleCellClick(0, { x: 3, y: 3 }); // p2 fires at p1's board, misses
-    game.handleCellClick(1, { x: 0, y: 6 }); // p2 moves
-    // Now p1 fires and must move, but (3,3) is bombed.
+    placeBothShips({ x: 1, y: 1 });
+    game.handleCellClick(1, { x: 0, y: 0 }); // p1 miss
+    game.handleCellClick(0, { x: 2, y: 2 }); // p1 moves to (2,2)
+    game.handleCellClick(0, { x: 2, y: 1 }); // p2 fires at p1's board, misses
+    game.handleCellClick(1, { x: 3, y: 2 }); // p2 moves
+    // Now p1 fires and must move, but (2,1) is bombed.
     game.handleCellClick(1, { x: 0, y: 1 }); // miss -> move phase
     const before = game.players()[0].ship;
-    game.handleCellClick(0, { x: 3, y: 3 }); // bombed square: rejected
+    game.handleCellClick(0, { x: 2, y: 1 }); // bombed square: rejected
     expect(game.players()[0].ship).toEqual(before);
     expect(game.phase()).toBe('move');
   });
 
   it('ignores firing at an already-bombed square', () => {
     placeBothShips();
-    game.handleCellClick(1, { x: 2, y: 2 }); // p1 miss
+    game.handleCellClick(1, { x: 1, y: 2 }); // p1 miss
     game.handleCellClick(0, { x: 1, y: 1 }); // p1 moves
-    game.handleCellClick(0, { x: 4, y: 4 }); // p2 miss
-    game.handleCellClick(1, { x: 3, y: 5 }); // p2 moves
-    game.handleCellClick(1, { x: 2, y: 2 }); // p1 fires same square again
+    game.handleCellClick(0, { x: 3, y: 0 }); // p2 miss
+    game.handleCellClick(1, { x: 2, y: 3 }); // p2 moves
+    game.handleCellClick(1, { x: 1, y: 2 }); // p1 fires same square again
     expect(game.phase()).toBe('fire'); // nothing happened, still p1 to fire
     expect(game.currentPlayer()).toBe(0);
   });
@@ -86,23 +85,23 @@ describe('GameService', () => {
     game.handleCellClick(1, { x: 0, y: 0 }); // p1 miss
     game.handleCellClick(0, { x: 0, y: 1 }); // p1 -> (0,1)
     game.handleCellClick(0, { x: 1, y: 0 }); // p2 bombs (1,0), miss
-    game.handleCellClick(1, { x: 4, y: 5 }); // p2 -> (4,5)
+    game.handleCellClick(1, { x: 3, y: 2 }); // p2 -> (3,2)
     game.handleCellClick(1, { x: 0, y: 1 }); // p1 miss
     game.handleCellClick(0, { x: 0, y: 0 }); // p1 -> (0,0)
     game.handleCellClick(0, { x: 0, y: 1 }); // p2 bombs (0,1), miss
-    game.handleCellClick(1, { x: 4, y: 6 }); // p2 -> (4,6)
+    game.handleCellClick(1, { x: 3, y: 3 }); // p2 -> (3,3)
     game.handleCellClick(1, { x: 0, y: 2 }); // p1 miss, only (1,1) left to move to
     expect(game.legalMoves(0)).toEqual([{ x: 1, y: 1 }]);
     game.handleCellClick(0, { x: 1, y: 1 }); // p1 -> (1,1), forced
-    game.handleCellClick(0, { x: 4, y: 0 }); // p2 miss
-    game.handleCellClick(1, { x: 4, y: 5 }); // p2 -> (4,5)
+    game.handleCellClick(0, { x: 3, y: 0 }); // p2 miss
+    game.handleCellClick(1, { x: 3, y: 2 }); // p2 -> (3,2)
     game.handleCellClick(1, { x: 0, y: 3 }); // p1 miss
     game.handleCellClick(0, { x: 0, y: 0 }); // p1 -> (0,0)
     game.handleCellClick(0, { x: 1, y: 1 }); // p2 bombs (1,1), miss
-    game.handleCellClick(1, { x: 4, y: 6 }); // p2 -> (4,6)
+    game.handleCellClick(1, { x: 3, y: 3 }); // p2 -> (3,3)
 
     // All three neighbours of (0,0) are now bombed: firing must auto-pass the turn.
-    game.handleCellClick(1, { x: 0, y: 4 }); // p1 miss
+    game.handleCellClick(1, { x: 1, y: 0 }); // p1 miss
     expect(game.players()[0].ship).toEqual({ x: 0, y: 0 });
     expect(game.currentPlayer()).toBe(1);
     expect(game.phase()).toBe('fire');
@@ -110,7 +109,7 @@ describe('GameService', () => {
 
   it('resets to a fresh game', () => {
     placeBothShips();
-    game.handleCellClick(1, { x: 4, y: 6 });
+    game.handleCellClick(1, { x: 3, y: 3 });
     game.reset();
     expect(game.phase()).toBe('placement');
     expect(game.currentPlayer()).toBe(0);

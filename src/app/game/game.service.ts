@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-export const BOARD_W = 5;
-export const BOARD_H = 7;
+export const BOARD_W = 4;
+export const BOARD_H = 4;
 
 export type PlayerId = 0 | 1;
 export type Phase = 'placement' | 'fire' | 'move' | 'gameover';

@@ -1,27 +1,28 @@
 .game {
   max-width: 640px;
   margin: 0 auto;
-  padding: 1rem;
+  padding: 0.75rem;
   font-family: system-ui, sans-serif;
   text-align: center;
 }
 
 h1 {
   margin: 0 0 0.25rem;
-  font-size: 1.5rem;
+  font-size: 1.3rem;
 }
 
 .status {
-  min-height: 1.5em;
-  margin: 0 0 1rem;
+  min-height: 1.4em;
+  margin: 0 0 0.75rem;
   font-weight: 600;
 }
 
+// Mobile first: boards stacked vertically for portrait screens.
 .boards {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 1.5rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
 }
 
 .board-wrap {
@@ -48,19 +49,20 @@ h1 {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  width: min(45vw, 240px);
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  width: min(62vw, 230px);
 }
 
 .cell {
   aspect-ratio: 1;
   border: 1px solid #7aa5c4;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #dbeefc;
-  font-size: 1rem;
+  font-size: 1.3rem;
   padding: 0;
   cursor: pointer;
+  touch-action: manipulation; // no double-tap zoom on fast taps
 
   &.destroyed {
     background: #55606a;
@@ -86,12 +88,22 @@ h1 {
   }
 }
 
+// Side by side when there is room (landscape / desktop).
+@media (min-width: 560px) {
+  .boards {
+    flex-direction: row;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 2rem;
+  }
+}
+
 .reset {
-  margin-top: 1.25rem;
-  padding: 0.6rem 1.5rem;
+  margin-top: 1rem;
+  padding: 0.7rem 1.75rem;
   font-size: 1rem;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #2b6cb0;
   color: #fff;
   cursor: pointer;

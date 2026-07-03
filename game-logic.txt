@@ -7,7 +7,7 @@ game logic:
 its a battle shipt game p2p
 
 1. We have only two oposing ships
-2. The game board consists of 35 squars 5 on the wide side and and 7 on the tall side
+2. The game board consists of 16 squars 4x4
 3. Ship occupies one square and can move to is bordering all 8 squars.
 4. In the begining of the game plaers choose where to position the ship (see 2. 3.), 
 the ships hould not be visible to the oposing player but in the bigingin for the development purposes lets leave them visible

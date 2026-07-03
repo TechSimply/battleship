@@ -12,7 +12,7 @@
           }
         </p>
         <div class="board">
-          @for (cell of board; track cell.y * 5 + cell.x) {
+          @for (cell of board; track $index) {
             <button
               class="cell"
               [class.destroyed]="cell.destroyed"
