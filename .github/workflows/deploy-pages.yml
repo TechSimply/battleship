@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install deps
@@ -32,13 +32,23 @@ jobs:
       - name: Build
         run: npx ng build --configuration production --base-href "/battleship/"
 
+      - name: Detect output dir
+        id: out
+        run: |
+          if ls -d dist/*/browser >/dev/null 2>&1; then
+            echo "path=$(ls -d dist/*/browser | head -n1)" >> $GITHUB_OUTPUT
+          else
+            echo "path=$(ls -d dist/* | head -n1)" >> $GITHUB_OUTPUT
+          fi
+          echo "Using output path: ${{ steps.out.outputs.path }}"
+
       - name: SPA fallback
-        run: cp dist/*/browser/index.html dist/*/browser/404.html || true
+        run: cp "${{ steps.out.outputs.path }}/index.html" "${{ steps.out.outputs.path }}/404.html" || true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist/*/browser
+          path: ${{ steps.out.outputs.path }}
 
   deploy:
     environment:
