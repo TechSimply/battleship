@@ -1,0 +1,40 @@
+<main class="game">
+  <h1>Battleship</h1>
+  <p class="status">{{ game.message() }}</p>
+
+  <div class="boards">
+    @for (board of boards(); track $index; let boardIndex = $index) {
+      <section class="board-wrap" [class.active]="isActiveBoard(boardIndex)">
+        <h2>Player {{ boardIndex + 1 }}</h2>
+        <div class="board">
+          @for (cell of board; track cell.y * 5 + cell.x) {
+            <button
+              class="cell"
+              [class.destroyed]="cell.destroyed"
+              [class.ship]="cell.hasShip && !cell.shipDestroyed"
+              [class.ship-destroyed]="cell.shipDestroyed"
+              [class.selected]="cell.selected"
+              [class.exposed]="cell.exposed"
+              [class.move-target]="cell.moveTarget"
+              (click)="onCellClick(boardIndex, cell)"
+            >
+              @if (cell.shipDestroyed) {
+                💥
+              } @else if (cell.hasShip) {
+                🚢
+              } @else if (cell.destroyed) {
+                ✖
+              } @else if (cell.exposed) {
+                🎯
+              }
+            </button>
+          }
+        </div>
+      </section>
+    }
+  </div>
+
+  @if (game.phase() === 'gameover') {
+    <button class="reset" (click)="game.reset()">Play again</button>
+  }
+</main>

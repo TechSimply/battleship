@@ -1,18 +1,18 @@
-I want to create a web app that will be donwloadable on mobile 
+I want to create a web app that will be donwloadable on mobile, the pwa
 
-the pwa 
+lets focus on mobile first on every step
 
-you tell me focus on that from the start or later
-
-I'll tell you the game 
+game logic:
 
 its a battle shipt game p2p
 
-1. choose positon of ships (which will not be visible for the oponent, but lets make it visible for the bigingin to set up the game)
-
-players choose the position of the game fron 35 squar formed 5 on the wide side and and 7 on the tall sied
-only two ship
-
-2. ships fire one after another when the player_1 fires is position is exposed to the player_2 
-and player_1 is given one move it must move one squer if it has any left if not the play is passed to the next player, 
-what does mean fire it means to choose position form player_2 s 5/7 board wherever the bomb lands that square is not usable any more, when the ship is hit the other playuers wins
+1. We have only two oposing ships
+2. The game board consists of 35 squars 5 on the wide side and and 7 on the tall side
+3. Ship occupies one square and can move to is bordering all 8 squars.
+4. In the begining of the game plaers choose where to position the ship (see 2. 3.), 
+the ships hould not be visible to the oposing player but in the bigingin for the development purposes lets leave them visible
+5.1. Ship shold choose on what oposing players board to fire,
+5.2. When player fires he exposes the square from which it was fired
+5.3. Where the bomg is fired that square is not usable any more
+5.4. Player which fires should move per rules: 3. , 5.3.
+6. If the ship is hit you loose game over
