@@ -20,6 +20,7 @@ interface BoardVM {
 
 @Component({
   selector: 'app-game',
+  host: { id: 'game-component' },
   templateUrl: './game.html',
   styleUrl: './game.scss',
 })

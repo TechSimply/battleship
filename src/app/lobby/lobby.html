@@ -1,40 +1,47 @@
-<main class="lobby">
-  <h1>Battleship</h1>
+<main id="lobby-screen" class="lobby">
+  <h1 id="lobby-title">Battleship</h1>
 
   @switch (session.state()) {
     @case ('hosting') {
-      <section class="panel">
+      <section id="hosting-panel" class="panel">
         @if (session.gameId(); as id) {
-          <p class="label">Your game id</p>
-          <p class="game-id">{{ id }}</p>
-          <p class="hint">Share it with your opponent, then wait for them to join.</p>
-          <button class="btn primary" (click)="share()">
+          <p id="host-label" class="label">Your game id</p>
+          <p id="host-game-id" class="game-id">{{ id }}</p>
+          <p id="host-hint" class="hint">Share it with your opponent, then wait for them to join.</p>
+          <button id="share-btn" class="btn primary" (click)="share()">
             {{ copied() ? 'Copied!' : 'Share game id' }}
           </button>
-          <p class="waiting">Waiting for opponent<span class="dots"></span></p>
+          <p id="host-waiting" class="waiting">
+            Waiting for opponent<span id="host-waiting-dots" class="dots"></span>
+          </p>
         } @else {
-          <p class="waiting">Creating game<span class="dots"></span></p>
+          <p id="creating-waiting" class="waiting">
+            Creating game<span id="creating-waiting-dots" class="dots"></span>
+          </p>
         }
-        <button class="btn ghost" (click)="back()">Cancel</button>
+        <button id="cancel-host-btn" class="btn ghost" (click)="back()">Cancel</button>
       </section>
     }
     @case ('joining') {
-      <section class="panel">
-        <p class="waiting">Joining {{ session.gameId() }}<span class="dots"></span></p>
-        <button class="btn ghost" (click)="back()">Cancel</button>
+      <section id="joining-panel" class="panel">
+        <p id="joining-waiting" class="waiting">
+          Joining {{ session.gameId() }}<span id="joining-waiting-dots" class="dots"></span>
+        </p>
+        <button id="cancel-join-btn" class="btn ghost" (click)="back()">Cancel</button>
       </section>
     }
     @case ('error') {
-      <section class="panel">
-        <p class="error">{{ session.errorMsg() }}</p>
-        <button class="btn primary" (click)="back()">Back</button>
+      <section id="error-panel" class="panel">
+        <p id="error-message" class="error">{{ session.errorMsg() }}</p>
+        <button id="error-back-btn" class="btn primary" (click)="back()">Back</button>
       </section>
     }
     @default {
       @if (joinOpen()) {
-        <section class="panel">
-          <p class="label">Enter the game id you were given</p>
+        <section id="join-panel" class="panel">
+          <p id="join-label" class="label">Enter the game id you were given</p>
           <input
+            id="game-id-input"
             class="id-input"
             type="text"
             placeholder="Battle1"
@@ -44,15 +51,15 @@
             (keyup.enter)="join()"
           />
           @if (session.errorMsg(); as err) {
-            <p class="error">{{ err }}</p>
+            <p id="join-error" class="error">{{ err }}</p>
           }
-          <button class="btn primary" (click)="join()">Join</button>
-          <button class="btn ghost" (click)="back()">Back</button>
+          <button id="join-btn" class="btn primary" (click)="join()">Join</button>
+          <button id="join-back-btn" class="btn ghost" (click)="back()">Back</button>
         </section>
       } @else {
-        <section class="menu">
-          <button class="btn primary big" (click)="session.newGame()">New Game</button>
-          <button class="btn secondary big" (click)="openJoin()">Join The Game</button>
+        <section id="main-menu" class="menu">
+          <button id="new-game-btn" class="btn primary big" (click)="session.newGame()">New Game</button>
+          <button id="join-the-game-btn" class="btn secondary big" (click)="openJoin()">Join The Game</button>
         </section>
       }
     }

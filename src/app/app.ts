@@ -6,6 +6,7 @@ import { SessionService } from './game/session.service';
 @Component({
   selector: 'app-root',
   imports: [Game, Lobby],
+  host: { id: 'app-root' },
   templateUrl: './app.html',
   styleUrl: './app.scss',
 })

@@ -5,6 +5,7 @@ import { SessionService } from '../game/session.service';
 @Component({
   selector: 'app-lobby',
   imports: [FormsModule],
+  host: { id: 'lobby-component' },
   templateUrl: './lobby.html',
   styleUrl: './lobby.scss',
 })

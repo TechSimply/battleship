@@ -1,29 +1,36 @@
-<main class="game">
-  <header class="topbar">
-    <span class="game-tag">{{ session.gameId() }}</span>
-    <button class="leave" (click)="session.leave()">Leave</button>
+<main id="game-screen" class="game">
+  <header id="game-topbar" class="topbar">
+    <span id="game-tag" class="game-tag">{{ session.gameId() }}</span>
+    <button id="leave-btn" class="leave" (click)="session.leave()">Leave</button>
   </header>
 
-  <h1>Battleship</h1>
+  <h1 id="game-title">Battleship</h1>
 
   @if (session.state() === 'disconnected') {
-    <p class="status error">Opponent disconnected</p>
-    <button class="reset" (click)="session.leave()">Back to menu</button>
+    <p id="disconnected-status" class="status error">Opponent disconnected</p>
+    <button id="back-to-menu-btn" class="reset" (click)="session.leave()">Back to menu</button>
   } @else {
-    <p class="status">{{ message() }}</p>
+    <p id="game-status" class="status">{{ message() }}</p>
 
-    <div class="boards">
+    <div id="boards" class="boards">
       @for (board of boards(); track board.id) {
-        <section class="board-wrap" [class.active]="isActiveBoard(board)">
-          <h2>{{ board.mine ? 'Your fleet' : 'Enemy waters' }}</h2>
-          <p class="hint">
+        <section
+          [id]="(board.mine ? 'fleet' : 'enemy') + '-board-wrap'"
+          class="board-wrap"
+          [class.active]="isActiveBoard(board)"
+        >
+          <h2 [id]="(board.mine ? 'fleet' : 'enemy') + '-board-title'">
+            {{ board.mine ? 'Your fleet' : 'Enemy waters' }}
+          </h2>
+          <p [id]="(board.mine ? 'fleet' : 'enemy') + '-board-hint'" class="hint">
             @if (isActiveBoard(board)) {
               👇 tap here
             }
           </p>
-          <div class="board">
+          <div [id]="(board.mine ? 'fleet' : 'enemy') + '-board'" class="board">
             @for (cell of board.cells; track $index) {
               <button
+                [id]="(board.mine ? 'fleet' : 'enemy') + '-cell-' + cell.x + '-' + cell.y"
                 class="cell"
                 [class.destroyed]="cell.destroyed"
                 [class.ship]="cell.hasShip && !cell.shipDestroyed"
@@ -49,7 +56,7 @@
     </div>
 
     @if (game.phase() === 'gameover') {
-      <button class="reset" (click)="session.playAgain()">Play again</button>
+      <button id="play-again-btn" class="reset" (click)="session.playAgain()">Play again</button>
     }
   }
 </main>
