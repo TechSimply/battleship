@@ -30,21 +30,12 @@ export class Lobby {
     this.session.join(this.joinId);
   }
 
-  /** Share the game id with player 2 (rule 7.3) — native share sheet on mobile. */
-  protected async share(): Promise<void> {
+  /** Copy the game id so player 2 can paste it into Join The Game (rule 7.3). */
+  protected async copy(): Promise<void> {
     const id = this.session.gameId();
     if (!id) return;
-    const text = `Join my Battleship game! Game id: ${id} — ${location.href}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ text });
-      } catch {
-        // user closed the share sheet — nothing to do
-      }
-    } else {
-      await navigator.clipboard.writeText(id);
-      this.copied.set(true);
-      setTimeout(() => this.copied.set(false), 1500);
-    }
+    await navigator.clipboard.writeText(id);
+    this.copied.set(true);
+    setTimeout(() => this.copied.set(false), 1500);
   }
 }
