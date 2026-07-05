@@ -1,44 +1,55 @@
 <main class="game">
+  <header class="topbar">
+    <span class="game-tag">{{ session.gameId() }}</span>
+    <button class="leave" (click)="session.leave()">Leave</button>
+  </header>
+
   <h1>Battleship</h1>
-  <p class="status">{{ game.message() }}</p>
 
-  <div class="boards">
-    @for (board of boards(); track $index; let boardIndex = $index) {
-      <section class="board-wrap" [class.active]="isActiveBoard(boardIndex)">
-        <h2>Player {{ boardIndex + 1 }}</h2>
-        <p class="hint">
-          @if (isActiveBoard(boardIndex)) {
-            👇 Player {{ game.currentPlayer() + 1 }} taps here
-          }
-        </p>
-        <div class="board">
-          @for (cell of board; track $index) {
-            <button
-              class="cell"
-              [class.destroyed]="cell.destroyed"
-              [class.ship]="cell.hasShip && !cell.shipDestroyed"
-              [class.ship-destroyed]="cell.shipDestroyed"
-              [class.exposed]="cell.exposed"
-              [class.move-target]="cell.moveTarget"
-              (click)="onCellClick(boardIndex, cell)"
-            >
-              @if (cell.shipDestroyed) {
-                💥
-              } @else if (cell.hasShip) {
-                🚢
-              } @else if (cell.destroyed) {
-                ✖
-              } @else if (cell.exposed) {
-                🎯
-              }
-            </button>
-          }
-        </div>
-      </section>
+  @if (session.state() === 'disconnected') {
+    <p class="status error">Opponent disconnected</p>
+    <button class="reset" (click)="session.leave()">Back to menu</button>
+  } @else {
+    <p class="status">{{ message() }}</p>
+
+    <div class="boards">
+      @for (board of boards(); track board.id) {
+        <section class="board-wrap" [class.active]="isActiveBoard(board)">
+          <h2>{{ board.mine ? 'Your fleet' : 'Enemy waters' }}</h2>
+          <p class="hint">
+            @if (isActiveBoard(board)) {
+              👇 tap here
+            }
+          </p>
+          <div class="board">
+            @for (cell of board.cells; track $index) {
+              <button
+                class="cell"
+                [class.destroyed]="cell.destroyed"
+                [class.ship]="cell.hasShip && !cell.shipDestroyed"
+                [class.ship-destroyed]="cell.shipDestroyed"
+                [class.exposed]="cell.exposed"
+                [class.move-target]="cell.moveTarget"
+                (click)="onCellClick(board, cell)"
+              >
+                @if (cell.shipDestroyed) {
+                  💥
+                } @else if (cell.hasShip) {
+                  🚢
+                } @else if (cell.destroyed) {
+                  ✖
+                } @else if (cell.exposed) {
+                  🎯
+                }
+              </button>
+            }
+          </div>
+        </section>
+      }
+    </div>
+
+    @if (game.phase() === 'gameover') {
+      <button class="reset" (click)="session.playAgain()">Play again</button>
     }
-  </div>
-
-  @if (game.phase() === 'gameover') {
-    <button class="reset" (click)="game.reset()">Play again</button>
   }
 </main>

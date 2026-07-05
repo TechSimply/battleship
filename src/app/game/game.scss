@@ -12,8 +12,40 @@ $cell-border: rgba(110, 170, 220, 0.18);
 .game {
   max-width: 640px;
   margin: 0 auto;
-  padding: 1rem 0.75rem 2rem;
+  padding: 0.6rem 0.75rem 2rem;
   text-align: center;
+}
+
+// Session bar: game id on the left, leave on the right.
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+
+  .game-tag {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: $cyan;
+    background: rgba(79, 216, 235, 0.08);
+    border: 1px solid rgba(79, 216, 235, 0.25);
+    border-radius: 999px;
+  }
+
+  .leave {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #9fc3dc;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
 }
 
 h1 {
@@ -31,6 +63,12 @@ h1 {
 }
 
 .status {
+  &.error {
+    color: #ff8a76;
+    border-color: rgba(255, 138, 118, 0.4);
+    background: rgba(255, 92, 74, 0.08);
+  }
+
   display: inline-block;
   min-height: 1.4em;
   margin: 0 auto 1.1rem;

@@ -11,6 +11,16 @@ export interface Coord {
   y: number;
 }
 
+/**
+ * Everything that changes the game is a serializable action, so the same
+ * action can be applied locally and sent to the opponent's device (P2P sync).
+ */
+export type GameAction =
+  | { kind: 'place'; player: PlayerId; c: Coord }
+  | { kind: 'fire'; player: PlayerId; c: Coord }
+  | { kind: 'move'; player: PlayerId; c: Coord }
+  | { kind: 'reset' };
+
 export interface PlayerState {
   /** Each player has exactly one ship; null until placed. */
   ship: Coord | null;
@@ -36,36 +46,48 @@ function emptyPlayer(): PlayerState {
 @Injectable({ providedIn: 'root' })
 export class GameService {
   readonly phase = signal<Phase>('placement');
+  /** Whose turn it is during fire/move. Player 0 (the host) fires first. */
   readonly currentPlayer = signal<PlayerId>(0);
   readonly winner = signal<PlayerId | null>(null);
   readonly players = signal<[PlayerState, PlayerState]>([emptyPlayer(), emptyPlayer()]);
 
-  readonly message = computed(() => {
-    const p = `Player ${this.currentPlayer() + 1}`;
-    switch (this.phase()) {
-      case 'placement':
-        return `${p}: tap your board to place your ship`;
-      case 'fire':
-        return `${p}: fire! Tap a square on Player ${this.currentPlayer() === 0 ? 2 : 1}'s board`;
-      case 'move':
-        return `${p}: your position is exposed — move your ship one square`;
-      case 'gameover':
-        return `Player ${this.winner()! + 1} wins!`;
-    }
-  });
+  readonly bothPlaced = computed(() => this.players().every((p) => p.ship !== null));
 
-  handleCellClick(board: PlayerId, c: Coord): void {
-    const me = this.currentPlayer();
+  /**
+   * Interpret a tap by `actor` on `board` as a game action, apply it, and
+   * return it so the caller can forward it to the other device.
+   * Returns null when the tap is not a legal action right now.
+   */
+  tryLocal(actor: PlayerId, board: PlayerId, c: Coord): GameAction | null {
+    let action: GameAction | null = null;
     switch (this.phase()) {
       case 'placement':
-        if (board === me) this.placeShip(c);
+        if (board === actor) action = { kind: 'place', player: actor, c };
         break;
       case 'fire':
-        if (board !== me) this.fireAt(c);
+        if (board !== actor && actor === this.currentPlayer())
+          action = { kind: 'fire', player: actor, c };
         break;
       case 'move':
-        if (board === me) this.moveTo(c);
+        if (board === actor && actor === this.currentPlayer())
+          action = { kind: 'move', player: actor, c };
         break;
+    }
+    return action && this.apply(action) ? action : null;
+  }
+
+  /** Apply an action (local or received from the opponent). */
+  apply(action: GameAction): boolean {
+    switch (action.kind) {
+      case 'place':
+        return this.placeShip(action.player, action.c);
+      case 'fire':
+        return this.fireAt(action.player, action.c);
+      case 'move':
+        return this.moveTo(action.player, action.c);
+      case 'reset':
+        this.reset();
+        return true;
     }
   }
 
@@ -93,23 +115,24 @@ export class GameService {
     this.players.set([emptyPlayer(), emptyPlayer()]);
   }
 
-  private placeShip(c: Coord): void {
-    const me = this.currentPlayer();
-    this.updatePlayer(me, (p) => ({ ...p, ship: c }));
+  /** Rule 4: both players place their own ship; done once each has placed. */
+  private placeShip(player: PlayerId, c: Coord): boolean {
+    if (this.phase() !== 'placement') return false;
+    if (this.players()[player].ship) return false; // already placed
+    this.updatePlayer(player, (p) => ({ ...p, ship: c }));
 
-    if (me === 0) {
-      this.currentPlayer.set(1);
-    } else {
+    if (this.bothPlaced()) {
       this.currentPlayer.set(0);
       this.phase.set('fire');
     }
+    return true;
   }
 
-  private fireAt(c: Coord): void {
-    const me = this.currentPlayer();
-    const enemy: PlayerId = me === 0 ? 1 : 0;
+  private fireAt(shooter: PlayerId, c: Coord): boolean {
+    if (this.phase() !== 'fire' || shooter !== this.currentPlayer()) return false;
+    const enemy: PlayerId = shooter === 0 ? 1 : 0;
     const enemyState = this.players()[enemy];
-    if (enemyState.destroyed[idx(c)]) return; // square already bombed
+    if (enemyState.destroyed[idx(c)]) return false; // square already bombed
 
     this.updatePlayer(enemy, (p) => {
       const destroyed = [...p.destroyed];
@@ -120,27 +143,29 @@ export class GameService {
 
     // Rule 6: if the ship is hit, game over.
     if (this.players()[enemy].shipDestroyed) {
-      this.winner.set(me);
+      this.winner.set(shooter);
       this.phase.set('gameover');
-      return;
+      return true;
     }
 
     // Rule 5.2: firing exposes the square it was fired from.
-    this.updatePlayer(me, (p) => ({ ...p, exposedAt: p.ship ? { ...p.ship } : null }));
+    this.updatePlayer(shooter, (p) => ({ ...p, exposedAt: p.ship ? { ...p.ship } : null }));
 
     // Rule 5.4: the shooter must move, if any usable square borders it.
-    if (this.legalMoves(me).length === 0) {
+    if (this.legalMoves(shooter).length === 0) {
       this.endTurn();
     } else {
       this.phase.set('move');
     }
+    return true;
   }
 
-  private moveTo(c: Coord): void {
-    const me = this.currentPlayer();
-    if (!this.legalMoves(me).some((m) => sameCell(m, c))) return;
-    this.updatePlayer(me, (p) => ({ ...p, ship: c }));
+  private moveTo(player: PlayerId, c: Coord): boolean {
+    if (this.phase() !== 'move' || player !== this.currentPlayer()) return false;
+    if (!this.legalMoves(player).some((m) => sameCell(m, c))) return false;
+    this.updatePlayer(player, (p) => ({ ...p, ship: c }));
     this.endTurn();
+    return true;
   }
 
   private endTurn(): void {

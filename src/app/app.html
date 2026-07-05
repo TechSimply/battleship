@@ -1,1 +1,5 @@
-<app-game />
+@if (inGame()) {
+  <app-game />
+} @else {
+  <app-lobby />
+}
