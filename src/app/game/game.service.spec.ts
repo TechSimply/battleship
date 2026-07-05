@@ -151,6 +151,29 @@ describe('GameService', () => {
     expect(game.winner()).toBe(0);
   });
 
+  it('scores one point for the winner and keeps it across a rematch (rule 8)', () => {
+    placeBothShips();
+    click(1, { x: 3, y: 3 }); // player 1 hits player 2
+    expect(game.scores()).toEqual([1, 0]);
+
+    game.apply({ kind: 'reset' }); // "play again" keeps the score
+    expect(game.scores()).toEqual([1, 0]);
+
+    placeBothShips({ x: 1, y: 1 }, { x: 2, y: 2 });
+    click(1, { x: 0, y: 0 }); // player 1 fires at enemy waters, misses
+    click(0, { x: 0, y: 0 }); // player 1 (exposed) moves onto (0,0)
+    click(0, { x: 0, y: 0 }); // player 2 fires at (0,0) and sinks player 1
+    expect(game.scores()).toEqual([1, 1]);
+  });
+
+  it('clears the score for a fresh session', () => {
+    placeBothShips();
+    click(1, { x: 3, y: 3 });
+    expect(game.scores()).toEqual([1, 0]);
+    game.resetScores();
+    expect(game.scores()).toEqual([0, 0]);
+  });
+
   it('resets to a fresh game', () => {
     placeBothShips();
     click(1, { x: 3, y: 3 });

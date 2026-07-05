@@ -32,6 +32,12 @@ export class Game {
     () => this.game.currentPlayer() === this.session.myPlayer(),
   );
 
+  // Rule 8: session score, shown from this device's point of view.
+  protected readonly myScore = computed(() => this.game.scores()[this.session.myPlayer()]);
+  protected readonly enemyScore = computed(
+    () => this.game.scores()[this.session.myPlayer() === 0 ? 1 : 0],
+  );
+
   // Each device shows its own perspective: enemy waters on top, own fleet below.
   protected readonly boards = computed<BoardVM[]>(() => {
     const me = this.session.myPlayer();

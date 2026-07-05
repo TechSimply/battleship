@@ -50,6 +50,8 @@ export class GameService {
   readonly currentPlayer = signal<PlayerId>(0);
   readonly winner = signal<PlayerId | null>(null);
   readonly players = signal<[PlayerState, PlayerState]>([emptyPlayer(), emptyPlayer()]);
+  /** Rule 8: running score within the session — one point per victory. */
+  readonly scores = signal<[number, number]>([0, 0]);
 
   readonly bothPlaced = computed(() => this.players().every((p) => p.ship !== null));
 
@@ -108,11 +110,17 @@ export class GameService {
     return moves;
   }
 
+  /** Reset the round for a rematch; the session score is kept (rule 8). */
   reset(): void {
     this.phase.set('placement');
     this.currentPlayer.set(0);
     this.winner.set(null);
     this.players.set([emptyPlayer(), emptyPlayer()]);
+  }
+
+  /** Clear the score — a fresh session (rule 8 scope is one game id). */
+  resetScores(): void {
+    this.scores.set([0, 0]);
   }
 
   /** Rule 4: both players place their own ship; done once each has placed. */
@@ -141,9 +149,14 @@ export class GameService {
       return { ...p, destroyed, shipDestroyed: p.shipDestroyed || hit };
     });
 
-    // Rule 6: if the ship is hit, game over.
+    // Rule 6: if the ship is hit, game over. Rule 8: winner scores a point.
     if (this.players()[enemy].shipDestroyed) {
       this.winner.set(shooter);
+      this.scores.update((s) => {
+        const next: [number, number] = [...s];
+        next[shooter] += 1;
+        return next;
+      });
       this.phase.set('gameover');
       return true;
     }

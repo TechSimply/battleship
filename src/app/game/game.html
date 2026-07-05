@@ -6,6 +6,18 @@
 
   <h1 id="game-title">Battleship</h1>
 
+  <div id="scoreboard" class="scoreboard">
+    <span id="my-score" class="score">
+      <span class="score-name">You</span>
+      <span class="score-value">{{ myScore() }}</span>
+    </span>
+    <span id="score-sep" class="score-sep">–</span>
+    <span id="enemy-score" class="score">
+      <span class="score-value">{{ enemyScore() }}</span>
+      <span class="score-name">Enemy</span>
+    </span>
+  </div>
+
   @if (session.state() === 'disconnected') {
     <p id="disconnected-status" class="status error">Opponent disconnected</p>
     <button id="back-to-menu-btn" class="reset" (click)="session.leave()">Back to menu</button>

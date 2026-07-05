@@ -62,6 +62,48 @@ h1 {
   filter: drop-shadow(0 0 14px rgba(79, 216, 235, 0.35));
 }
 
+// Rule 8: session scoreboard — "You  N – M  Enemy".
+.scoreboard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  margin: 0 auto 0.9rem;
+  padding: 0.35rem 1.1rem;
+  width: fit-content;
+  background: rgba(79, 216, 235, 0.06);
+  border: 1px solid rgba(79, 216, 235, 0.2);
+  border-radius: 999px;
+
+  .score {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .score-name {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #9fc3dc;
+  }
+
+  .score-value {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: $cyan;
+    text-shadow: 0 0 12px rgba(79, 216, 235, 0.45);
+    min-width: 1ch;
+    text-align: center;
+  }
+
+  .score-sep {
+    color: #4a6478;
+    font-weight: 700;
+  }
+}
+
 .status {
   &.error {
     color: #ff8a76;

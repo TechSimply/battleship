@@ -99,6 +99,7 @@ export class SessionService {
     this.conn = null;
     this.peer = null;
     this.game.reset();
+    this.game.resetScores();
     this.gameId.set(null);
     this.errorMsg.set(null);
     this.state.set('lobby');
@@ -134,6 +135,7 @@ export class SessionService {
   private attachConnection(conn: DataConnection, me: PlayerId): void {
     this.conn = conn;
     this.myPlayer.set(me);
+    this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
     this.game.reset();
     this.state.set('playing');
 
