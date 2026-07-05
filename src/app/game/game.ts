@@ -60,8 +60,8 @@ export class Game {
           : 'Enemy ship is repositioning…';
       case 'gameover':
         return this.game.winner() === me
-          ? 'Victory! Enemy ship destroyed 🎉'
-          : 'Your ship was destroyed 💥';
+          ? 'Victory! Enemy ship destroyed'
+          : 'Your ship was destroyed';
     }
   });
 
@@ -102,7 +102,7 @@ export class Game {
           destroyed: state.destroyed[y * BOARD_W + x],
           hasShip: shipVisible,
           shipDestroyed: hasShip && state.shipDestroyed,
-          // The 🎯 marker yields only to a ship actually drawn in the cell —
+          // The exposure reticle yields only to a ship actually drawn in the cell —
           // the enemy must see the exposure even while the ship still sits there.
           exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !shipVisible,
           moveTarget: moveTargets.some((m) => m.x === x && m.y === y),
