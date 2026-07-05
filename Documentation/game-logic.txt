@@ -11,9 +11,16 @@ its a battle shipt game p2p
 2.2. Two boards are positioned vertically one on top of another.
 3. Ship occupies one square and can move to is bordering all 8 squars.
 4. In the begining of the game plaers choose where to position the ship (see 2. 3.), 
-the ships hould not be visible to the oposing player but in the bigingin for the development purposes lets leave them visible
+the ships hould not be visible to the oposing player.
 5.1. Ship shold choose on what oposing players board to fire,
 5.2. When player fires he exposes the square from which it was fired
 5.3. Where the bomg is fired that square is not usable any more
 5.4. Player which fires should move per rules: 3. , 5.3.
 6. If the ship is hit you loose game over
+
+7. Game session
+7.1. As user opens a page we need to promt create "New Game" or "Join The Game"
+7.2. If player1 clicks new game
+A game id is generated Battle1 (meaning Battle[sequens number that increases with every new game])
+7.3. player1 should share the game id (e.x. Battle1) with player2,
+and player2 chooses "Join the game" and inputs the game id (e.x. Battle1)
