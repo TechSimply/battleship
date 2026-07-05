@@ -24,3 +24,6 @@ the ships hould not be visible to the oposing player.
 A game id is generated Battle1 (meaning Battle[sequens number that increases with every new game])
 7.3. player1 should share the game id (e.x. Battle1) with player2,
 and player2 chooses "Join the game" and inputs the game id (e.x. Battle1)
+
+8. Scoring system
+8.1. inside the game (battle1) we need to keep score one victory one point
