@@ -76,17 +76,35 @@
   <body>
     <main>
       <h1>Web App Dashboard</h1>
-      <section class="apps" aria-label="Applications">
-        <a class="app-link" href="/battleship/" target="_blank" rel="noopener noreferrer">
-          <span class="name">Battleship</span>
-          <span class="url">https://techsimply.github.io/battleship/</span>
-        </a>
-
-        <a class="app-link" href="/stopwatch/" target="_blank" rel="noopener noreferrer">
-          <span class="name">Stopwatch</span>
-          <span class="url">https://techsimply.github.io/stopwatch/</span>
-        </a>
-      </section>
+      <section id="app-list" class="apps" aria-label="Applications"></section>
     </main>
+
+    <script>
+      const applications = [
+        { name: 'Battleship', url: 'https://techsimply.github.io/battleship/' },
+        { name: 'Stopwatch', url: 'https://techsimply.github.io/stopwatch/' },
+      ];
+
+      const appList = document.getElementById('app-list');
+
+      applications.forEach((app) => {
+        const link = document.createElement('a');
+        link.className = 'app-link';
+        link.href = app.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = app.name;
+
+        const url = document.createElement('span');
+        url.className = 'url';
+        url.textContent = app.url;
+
+        link.append(name, url);
+        appList.append(link);
+      });
+    </script>
   </body>
 </html>
