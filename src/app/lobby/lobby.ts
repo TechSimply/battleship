@@ -1,10 +1,9 @@
 import { Component, inject, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { SessionService } from '../game/session.service';
 
 @Component({
   selector: 'app-lobby',
-  imports: [FormsModule],
+  imports: [],
   host: { id: 'lobby-component' },
   templateUrl: './lobby.html',
   styleUrl: './lobby.scss',
@@ -24,6 +23,14 @@ export class Lobby {
     this.joinOpen.set(false);
     this.joinId = '';
     this.session.leave();
+  }
+
+  /** Digits only, max 7 — rewrite the field so nothing else can even appear. */
+  protected onIdInput(e: Event): void {
+    const el = e.target as HTMLInputElement;
+    const clean = el.value.replace(/\D/g, '').slice(0, 7);
+    if (el.value !== clean) el.value = clean;
+    this.joinId = clean;
   }
 
   protected join(): void {

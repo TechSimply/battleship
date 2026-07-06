@@ -39,7 +39,6 @@
     @default {
       @if (joinOpen()) {
         <section id="join-panel" class="panel">
-          <p id="join-label" class="label">Enter the game number you were given</p>
           <div id="id-entry" class="id-entry">
             <span id="id-prefix" class="id-prefix">Battle</span>
             <input
@@ -48,9 +47,10 @@
               type="text"
               inputmode="numeric"
               placeholder="1"
+              maxlength="7"
               autocapitalize="none"
               autocomplete="off"
-              [(ngModel)]="joinId"
+              (input)="onIdInput($event)"
               (keyup.enter)="join()"
             />
           </div>
