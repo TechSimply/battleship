@@ -25,6 +25,20 @@ jobs:
         with:
           enablement: true
 
+      # Force "GitHub Actions" build type. In "deploy from a branch" mode,
+      # GitHub's built-in Jekyll workflow also deploys on every push (it
+      # renders README.md and the raw repo files) and races this workflow
+      # for the site URL — whichever finishes last wins. Pinning the build
+      # type kills that competing deployment for good.
+      - name: Disable legacy branch (Jekyll) builds
+        run: |
+          curl -sfX PUT \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages" \
+            -d '{"build_type":"workflow"}' \
+            || echo "::warning::Could not set Pages build_type=workflow — set Settings > Pages > Source to 'GitHub Actions' manually"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
