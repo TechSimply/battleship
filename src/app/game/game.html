@@ -22,7 +22,11 @@
     <p id="disconnected-status" class="status error">Opponent disconnected</p>
     <button id="back-to-menu-btn" class="reset" (click)="session.leave()">Back to menu</button>
   } @else {
-    <p id="game-status" class="status">{{ message() }}</p>
+    <p
+      id="game-status"
+      class="status"
+      [class.warn]="session.state() === 'reconnecting'"
+    >{{ message() }}@if (session.state() === 'reconnecting') {<span class="dots"></span>}</p>
 
     <div id="boards" class="boards">
       @for (board of boards(); track board.id) {
@@ -117,7 +121,7 @@
       }
     </div>
 
-    @if (game.phase() === 'gameover') {
+    @if (game.phase() === 'gameover' && session.state() === 'playing') {
       <button id="play-again-btn" class="reset" (click)="session.playAgain()">Play again</button>
     }
   }

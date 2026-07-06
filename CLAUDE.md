@@ -38,7 +38,13 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/game/session.service.ts` — owns the PeerJS lifecycle. Host claims peer id
   `techsimply-battleship-battle-{n}` (shown as `Battle{n}`), joiner connects by id; game actions
   flow over the data channel. Handles join errors and opponent-disconnect. `parseGameId()`
-  accepts `Battle3` / `battle 3` / `3`.
+  accepts `Battle3` / `battle 3` / `3`. A dropped connection enters a 45s `reconnecting` state
+  instead of ending the game: the joiner redials the host's stable id (`metadata.resume`), the
+  host swaps the connection in, and a `sync` handshake (each side reports how many opponent
+  actions it applied; the other resends its sent-log tail) restores identical state. Broker-socket
+  loss triggers a re-register retry loop so `Battle{n}` stays claimed. Leaving sends `bye` so the
+  opponent shows "disconnected" immediately rather than waiting out the grace window. Dev builds
+  expose `__battleshipDrop()` to sever the channel in tests.
 - `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first).
 - `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
   is hidden until it is hit or the game ends. Scoreboard under the title.
@@ -74,5 +80,5 @@ for networked/multi-device changes.
 
 ## Possible next steps
 
-TURN fallback for strict NATs (the free PeerJS cloud has no relay), reconnect/resume, random
+TURN fallback for strict NATs (the free PeerJS cloud has no relay), random
 first player, real-world two-phone connection test, further PWA polish.

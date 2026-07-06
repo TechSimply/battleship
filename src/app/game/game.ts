@@ -47,6 +47,7 @@ export class Game {
 
   protected readonly message = computed(() => {
     const me = this.session.myPlayer();
+    if (this.session.state() === 'reconnecting') return 'Connection lost — reconnecting';
     switch (this.game.phase()) {
       case 'placement':
         return this.game.players()[me].ship
@@ -70,6 +71,7 @@ export class Game {
   }
 
   protected isActiveBoard(board: BoardVM): boolean {
+    if (this.session.state() !== 'playing') return false;
     switch (this.game.phase()) {
       case 'placement':
         return board.mine && !this.game.players()[board.id].ship;
