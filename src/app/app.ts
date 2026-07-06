@@ -13,6 +13,16 @@ import { SessionService } from './game/session.service';
 export class App {
   protected readonly session = inject(SessionService);
 
+  constructor() {
+    // Invite links (…/?join=3) drop the opponent straight into the joining
+    // flow — no typing. Strip the param so a refresh doesn't re-join.
+    const join = new URLSearchParams(location.search).get('join');
+    if (join !== null) {
+      history.replaceState(null, '', location.pathname);
+      this.session.join(join);
+    }
+  }
+
   protected readonly inGame = () =>
     this.session.state() === 'playing' ||
     this.session.state() === 'reconnecting' ||

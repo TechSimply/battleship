@@ -12,7 +12,8 @@ export class Lobby {
   protected readonly session = inject(SessionService);
 
   protected readonly joinOpen = signal(false);
-  protected readonly copied = signal(false);
+  /** Which share button just fired, for its "Copied!" flash. */
+  protected readonly copied = signal<'link' | 'id' | null>(null);
   protected joinId = '';
 
   protected openJoin(): void {
@@ -37,12 +38,24 @@ export class Lobby {
     this.session.join(this.joinId);
   }
 
-  /** Copy the game id so player 2 can paste it into Join The Game (rule 7.3). */
+  /** Copy a deep link that lands player 2 straight in the game (rule 7.3). */
+  protected async copyLink(): Promise<void> {
+    const link = this.session.inviteLink();
+    if (!link) return;
+    await navigator.clipboard.writeText(link);
+    this.flashCopied('link');
+  }
+
+  /** Copy the game id so player 2 can type it into Join The Game (rule 7.3). */
   protected async copy(): Promise<void> {
     const id = this.session.gameId();
     if (!id) return;
     await navigator.clipboard.writeText(id);
-    this.copied.set(true);
-    setTimeout(() => this.copied.set(false), 1500);
+    this.flashCopied('id');
+  }
+
+  private flashCopied(kind: 'link' | 'id'): void {
+    this.copied.set(kind);
+    setTimeout(() => this.copied.set(null), 1500);
   }
 }

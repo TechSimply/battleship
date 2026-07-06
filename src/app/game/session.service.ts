@@ -90,6 +90,14 @@ export class SessionService {
     this.claimGameId(1);
   }
 
+  /**
+   * Rule 7.3 without the typing: a link that lands the opponent straight in
+   * the joining flow. document.baseURI honours the deployed <base href>.
+   */
+  inviteLink(): string | null {
+    return this.gameNumber === null ? null : `${document.baseURI}?join=${this.gameNumber}`;
+  }
+
   /** Rule 7.3: player 2 joins with the id player 1 shared. */
   join(idText: string): void {
     const n = parseGameId(idText);

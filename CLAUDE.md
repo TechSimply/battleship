@@ -45,7 +45,9 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   loss triggers a re-register retry loop so `Battle{n}` stays claimed. Leaving sends `bye` so the
   opponent shows "disconnected" immediately rather than waiting out the grace window. Dev builds
   expose `__battleshipDrop()` to sever the channel in tests.
-- `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first).
+- `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first). The host can copy an
+  invite link (`…/?join={n}`, built from `document.baseURI`) that `app.ts` auto-joins on load,
+  or share just the number for manual entry (digits-only field with a fixed "Battle" prefix).
 - `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
   is hidden until it is hit or the game ends. Scoreboard under the title.
 - `src/app/app.ts` — swaps between lobby and game based on session state.

@@ -7,9 +7,14 @@
         @if (session.gameId(); as id) {
           <p id="host-label" class="label">Your game id</p>
           <p id="host-game-id" class="game-id">{{ id }}</p>
-          <p id="host-hint" class="hint">Share it with your opponent, then wait for them to join.</p>
-          <button id="copy-btn" class="btn primary" (click)="copy()">
-            {{ copied() ? 'Copied!' : 'Copy game id' }}
+          <p id="host-hint" class="hint">
+            Send your opponent the invite link — or just tell them the number.
+          </p>
+          <button id="copy-link-btn" class="btn primary" (click)="copyLink()">
+            {{ copied() === 'link' ? 'Link copied!' : 'Copy invite link' }}
+          </button>
+          <button id="copy-btn" class="btn secondary" (click)="copy()">
+            {{ copied() === 'id' ? 'Copied!' : 'Copy game id' }}
           </button>
           <p id="host-waiting" class="waiting">
             Waiting for opponent<span id="host-waiting-dots" class="dots"></span>
