@@ -39,16 +39,21 @@
     @default {
       @if (joinOpen()) {
         <section id="join-panel" class="panel">
-          <p id="join-label" class="label">Enter the game id you were given</p>
-          <input
-            id="game-id-input"
-            class="id-input"
-            type="text"
-            autocapitalize="none"
-            autocomplete="off"
-            [(ngModel)]="joinId"
-            (keyup.enter)="join()"
-          />
+          <p id="join-label" class="label">Enter the game number you were given</p>
+          <div id="id-entry" class="id-entry">
+            <span id="id-prefix" class="id-prefix">Battle</span>
+            <input
+              id="game-id-input"
+              class="id-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="1"
+              autocapitalize="none"
+              autocomplete="off"
+              [(ngModel)]="joinId"
+              (keyup.enter)="join()"
+            />
+          </div>
           @if (session.errorMsg(); as err) {
             <p id="join-error" class="error">{{ err }}</p>
           }

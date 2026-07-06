@@ -94,7 +94,7 @@ export class SessionService {
   join(idText: string): void {
     const n = parseGameId(idText);
     if (n === null) {
-      this.errorMsg.set('That doesn’t look like a game id — try e.g. "Battle1"');
+      this.errorMsg.set('That doesn’t look like a game number — enter just the number, e.g. "1"');
       return;
     }
     this.errorMsg.set(null);
