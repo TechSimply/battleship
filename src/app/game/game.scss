@@ -116,6 +116,13 @@ h1 {
     background: rgba(255, 92, 74, 0.08);
   }
 
+  // Resume window: the game is paused, not lost.
+  &.warn {
+    color: $expose-amber;
+    border-color: rgba(255, 196, 87, 0.4);
+    background: rgba(255, 196, 87, 0.08);
+  }
+
   display: inline-block;
   min-height: 1.4em;
   margin: 0 auto 1.1rem;
@@ -129,6 +136,19 @@ h1 {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
     0 0 18px rgba(79, 216, 235, 0.12);
+}
+
+// Animated "…" (same as the lobby's) so waiting states read as alive.
+.dots::after {
+  content: '';
+  animation: dots 1.4s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75%, 100% { content: '...'; }
 }
 
 // Rule 2.2: two boards are positioned vertically, one on top of another —

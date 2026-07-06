@@ -14,5 +14,7 @@ export class App {
   protected readonly session = inject(SessionService);
 
   protected readonly inGame = () =>
-    this.session.state() === 'playing' || this.session.state() === 'disconnected';
+    this.session.state() === 'playing' ||
+    this.session.state() === 'reconnecting' ||
+    this.session.state() === 'disconnected';
 }
