@@ -19,7 +19,9 @@ export class App {
     const join = new URLSearchParams(location.search).get('join');
     if (join !== null) {
       history.replaceState(null, '', location.pathname);
-      this.session.join(join);
+      // Patient: the host may still be in their messaging app after sending
+      // this link, with their game tab backgrounded — wait for them.
+      this.session.join(join, { patient: true });
     }
   }
 

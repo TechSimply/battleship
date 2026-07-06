@@ -38,10 +38,25 @@ export class Lobby {
     this.session.join(this.joinId);
   }
 
-  /** Copy a deep link that lands player 2 straight in the game (rule 7.3). */
-  protected async copyLink(): Promise<void> {
+  /**
+   * Phones get the native share sheet — it overlays the page without
+   * backgrounding the tab, so the broker connection (and the Battle{n}
+   * registration) survives while the host picks a contact. Desktops copy.
+   */
+  protected readonly canShare = typeof navigator.share === 'function';
+
+  /** Share/copy a deep link that lands player 2 straight in the game (rule 7.3). */
+  protected async shareLink(): Promise<void> {
     const link = this.session.inviteLink();
     if (!link) return;
+    if (this.canShare) {
+      try {
+        await navigator.share({ title: 'Battleship', url: link });
+      } catch {
+        // user dismissed the share sheet — nothing to do
+      }
+      return;
+    }
     await navigator.clipboard.writeText(link);
     this.flashCopied('link');
   }

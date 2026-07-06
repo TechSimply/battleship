@@ -98,8 +98,13 @@ export class SessionService {
     return this.gameNumber === null ? null : `${document.baseURI}?join=${this.gameNumber}`;
   }
 
-  /** Rule 7.3: player 2 joins with the id player 1 shared. */
-  join(idText: string): void {
+  /**
+   * Rule 7.3: player 2 joins with the id player 1 shared. `patient` joins
+   * (invite links) keep retrying for a while: the host's phone often
+   * backgrounds its tab while sending the link, which drops Battle{n} off
+   * the broker until the host returns to the game and re-registers.
+   */
+  join(idText: string, opts?: { patient?: boolean }): void {
     const n = parseGameId(idText);
     if (n === null) {
       this.errorMsg.set('That doesn’t look like a game number — enter just the number, e.g. "1"');
@@ -109,22 +114,44 @@ export class SessionService {
     this.state.set('joining');
     this.gameNumber = n;
     this.gameId.set(`Battle${n}`);
+    const deadline = Date.now() + (opts?.patient ? 45_000 : 12_000);
 
-    const peer = this.createPeer(new Peer());
+    // While we're still retrying, peer-unavailable just means the host isn't
+    // registered right now — not a fatal error.
+    const peer = this.createPeer(
+      new Peer(),
+      (err) =>
+        err.type === 'peer-unavailable' && this.state() === 'joining' && Date.now() < deadline,
+    );
     peer.on('open', () => {
       if (this.state() !== 'joining') return; // broker reconnects re-emit 'open'
-      const conn = peer.connect(PEER_PREFIX + n, { reliable: true });
-      const failTimer = setTimeout(() => {
-        if (this.state() === 'joining') this.fail(`Couldn’t find game Battle${n}. Check the id and try again.`);
-      }, 12_000);
-      conn.on('open', () => {
-        clearTimeout(failTimer);
-        this.attachConnection(conn, 1, false);
-      });
-      conn.on('error', () => {
-        clearTimeout(failTimer);
-        this.fail(`Couldn’t reach game Battle${n}.`);
-      });
+      this.dialHost(peer, n, deadline);
+    });
+  }
+
+  /** One join attempt; reschedules itself until `deadline`, then fails. */
+  private dialHost(peer: Peer, n: number, deadline: number): void {
+    if (this.state() !== 'joining') return;
+    const retry = () => {
+      if (this.state() !== 'joining') return;
+      if (Date.now() >= deadline) {
+        this.fail(`Couldn’t find game Battle${n}. Check the id and try again.`);
+      } else {
+        setTimeout(() => this.dialHost(peer, n, deadline), 3_000);
+      }
+    };
+    const conn = peer.connect(PEER_PREFIX + n, { reliable: true });
+    const giveUp = setTimeout(() => {
+      conn.close();
+      retry();
+    }, 8_000);
+    conn.on('open', () => {
+      clearTimeout(giveUp);
+      this.attachConnection(conn, 1, false);
+    });
+    conn.on('error', () => {
+      clearTimeout(giveUp);
+      retry();
     });
   }
 

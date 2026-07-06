@@ -7,8 +7,12 @@
         @if (session.gameId(); as id) {
           <p id="host-label" class="label">Your game id</p>
           <p id="host-game-id" class="game-id">{{ id }}</p>
-          <button id="copy-link-btn" class="btn primary" (click)="copyLink()">
-            {{ copied() === 'link' ? 'Link copied!' : 'Copy invite link' }}
+          <button id="share-link-btn" class="btn primary" (click)="shareLink()">
+            @if (canShare) {
+              Share invite link
+            } @else {
+              {{ copied() === 'link' ? 'Link copied!' : 'Copy invite link' }}
+            }
           </button>
           <button id="copy-btn" class="btn secondary" (click)="copy()">
             {{ copied() === 'id' ? 'Copied!' : 'Copy game id' }}
