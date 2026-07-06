@@ -1,5 +1,5 @@
-import { Component, computed, inject } from '@angular/core';
-import { BOARD_H, BOARD_W, GameService, PlayerId } from './game.service';
+import { Component, ElementRef, computed, effect, inject, untracked } from '@angular/core';
+import { BOARD_H, BOARD_W, Coord, GameService, PlayerId } from './game.service';
 import { SessionService } from './session.service';
 
 interface CellVM {
@@ -10,6 +10,8 @@ interface CellVM {
   shipDestroyed: boolean;
   exposed: boolean;
   moveTarget: boolean;
+  /** Rotation (deg) of the move arrow — points away from the ship. */
+  moveDir: number;
 }
 
 interface BoardVM {
@@ -27,6 +29,16 @@ interface BoardVM {
 export class Game {
   protected readonly game = inject(GameService);
   protected readonly session = inject(SessionService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  constructor() {
+    // Tracer: fly a shell from the shooter's (exposed) square to the bombed
+    // square, so the exposure visibly originates from the shot.
+    effect(() => {
+      const shot = this.game.lastShot();
+      if (shot) untracked(() => this.animateShot(shot));
+    });
+  }
 
   protected readonly myTurn = computed(
     () => this.game.currentPlayer() === this.session.myPlayer(),
@@ -108,9 +120,50 @@ export class Game {
           // the enemy must see the exposure even while the ship still sits there.
           exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !shipVisible,
           moveTarget: moveTargets.some((m) => m.x === x && m.y === y),
+          // Arrow points from the ship outward to this escape square.
+          moveDir: state.ship
+            ? (Math.atan2(y - state.ship.y, x - state.ship.x) * 180) / Math.PI
+            : 0,
         });
       }
     }
     return { id, mine, cells };
+  }
+
+  /** Fly a shell across the boards; state markers land with a matching delay. */
+  private animateShot(shot: { shooter: PlayerId; from: Coord | null; to: Coord }): void {
+    if (!shot.from) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const root = this.host.nativeElement;
+    const layer = root.querySelector<HTMLElement>('#shot-layer');
+    const mineShot = shot.shooter === this.session.myPlayer();
+    const fromEl = root.querySelector(
+      `#${mineShot ? 'fleet' : 'enemy'}-cell-${shot.from.x}-${shot.from.y}`,
+    );
+    const toEl = root.querySelector(
+      `#${mineShot ? 'enemy' : 'fleet'}-cell-${shot.to.x}-${shot.to.y}`,
+    );
+    if (!layer || !fromEl || !toEl) return;
+
+    const lr = layer.getBoundingClientRect();
+    const a = fromEl.getBoundingClientRect();
+    const b = toEl.getBoundingClientRect();
+    const ax = a.left + a.width / 2 - lr.left;
+    const ay = a.top + a.height / 2 - lr.top;
+    const bx = b.left + b.width / 2 - lr.left;
+    const by = b.top + b.height / 2 - lr.top;
+    const angle = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
+
+    const shell = document.createElement('div');
+    shell.className = 'shell';
+    shell.style.transform = `translate(${ax}px, ${ay}px) rotate(${angle}deg)`;
+    layer.appendChild(shell);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        shell.style.transform = `translate(${bx}px, ${by}px) rotate(${angle}deg)`;
+      }),
+    );
+    shell.addEventListener('transitionend', () => shell.remove());
+    setTimeout(() => shell.remove(), 1000); // safety net if the event never fires
   }
 }

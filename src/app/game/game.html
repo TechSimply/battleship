@@ -29,6 +29,7 @@
     >{{ message() }}@if (session.state() === 'reconnecting') {<span class="dots"></span>}</p>
 
     <div id="boards" class="boards">
+      <div id="shot-layer" class="shot-layer" aria-hidden="true"></div>
       @for (board of boards(); track board.id) {
         <section
           [id]="(board.mine ? 'fleet' : 'enemy') + '-board-wrap'"
@@ -112,6 +113,13 @@
                     <circle cx="12" cy="12" r="6.2" />
                     <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
                     <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                  </svg>
+                } @else if (cell.moveTarget) {
+                  <svg class="icon icon-move" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
+                       [style.transform]="'rotate(' + cell.moveDir + 'deg)'" aria-hidden="true">
+                    <path d="M5 12h13" />
+                    <path d="M12 6l6 6-6 6" />
                   </svg>
                 }
               </button>

@@ -56,6 +56,18 @@ export class GameService {
   readonly bothPlaced = computed(() => this.players().every((p) => p.ship !== null));
 
   /**
+   * Transient: the last shot fired, for the tracer animation (from the
+   * shooter's exposed square to the bombed square). `n` makes each shot a
+   * distinct value so effects fire even when coordinates repeat.
+   */
+  readonly lastShot = signal<{
+    shooter: PlayerId;
+    from: Coord | null;
+    to: Coord;
+    n: number;
+  } | null>(null);
+
+  /**
    * Interpret a tap by `actor` on `board` as a game action, apply it, and
    * return it so the caller can forward it to the other device.
    * Returns null when the tap is not a legal action right now.
@@ -141,6 +153,14 @@ export class GameService {
     const enemy: PlayerId = shooter === 0 ? 1 : 0;
     const enemyState = this.players()[enemy];
     if (enemyState.destroyed[idx(c)]) return false; // square already bombed
+
+    const firedFrom = this.players()[shooter].ship;
+    this.lastShot.update((prev) => ({
+      shooter,
+      from: firedFrom ? { ...firedFrom } : null,
+      to: { ...c },
+      n: (prev?.n ?? 0) + 1,
+    }));
 
     this.updatePlayer(enemy, (p) => {
       const destroyed = [...p.destroyed];
