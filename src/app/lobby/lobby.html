@@ -7,9 +7,6 @@
         @if (session.gameId(); as id) {
           <p id="host-label" class="label">Your game id</p>
           <p id="host-game-id" class="game-id">{{ id }}</p>
-          <p id="host-hint" class="hint">
-            Send your opponent the invite link — or just tell them the number.
-          </p>
           <button id="copy-link-btn" class="btn primary" (click)="copyLink()">
             {{ copied() === 'link' ? 'Link copied!' : 'Copy invite link' }}
           </button>
