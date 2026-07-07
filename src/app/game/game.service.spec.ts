@@ -142,6 +142,54 @@ describe('GameService', () => {
     expect(game.phase()).toBe('fire');
   });
 
+  it('has no exposed square yet, so every square is a possible ship location', () => {
+    placeBothShips();
+    expect(game.possibleShipSquares(0)).toHaveLength(16);
+  });
+
+  it('narrows possible ship squares to the bordering squares after a forced move, excluding bombed ones', () => {
+    placeBothShips({ x: 1, y: 1 });
+    click(1, { x: 0, y: 0 }); // p1 miss -> player 0 exposed at (1,1)
+    click(0, { x: 2, y: 2 }); // player 0 moves to (2,2)
+    click(0, { x: 2, y: 1 }); // player 1 bombs (2,1) on player 0's board, miss
+    click(1, { x: 3, y: 2 }); // player 1 moves
+    click(1, { x: 0, y: 1 }); // player 0 fires again, re-exposed at (2,2); miss
+    click(0, { x: 3, y: 3 }); // player 0 forced to move
+    expect(game.currentPlayer()).toBe(1);
+
+    // The ship is now at one of (2,2)'s 8 neighbours, minus the bombed (2,1).
+    const candidates = game.possibleShipSquares(0);
+    expect(candidates).toHaveLength(7);
+    expect(candidates).not.toContainEqual({ x: 2, y: 1 });
+    expect(candidates).toContainEqual({ x: 3, y: 3 }); // where it actually went
+  });
+
+  it('pins the possible ship square to where it was exposed when it had no legal move', () => {
+    // Same corner-trap sequence as the "passes the turn" test above: all
+    // three neighbours of (0,0) end up bombed, so the ship never moved.
+    placeBothShips({ x: 0, y: 0 });
+    click(1, { x: 0, y: 0 });
+    click(0, { x: 0, y: 1 });
+    click(0, { x: 1, y: 0 });
+    click(1, { x: 3, y: 2 });
+    click(1, { x: 0, y: 1 });
+    click(0, { x: 0, y: 0 });
+    click(0, { x: 0, y: 1 });
+    click(1, { x: 3, y: 3 });
+    click(1, { x: 0, y: 2 });
+    click(0, { x: 1, y: 1 });
+    click(0, { x: 3, y: 0 });
+    click(1, { x: 3, y: 2 });
+    click(1, { x: 0, y: 3 });
+    click(0, { x: 0, y: 0 });
+    click(0, { x: 1, y: 1 });
+    click(1, { x: 3, y: 3 });
+    click(1, { x: 1, y: 0 }); // p1 miss, no legal move left -> auto-pass
+
+    expect(game.currentPlayer()).toBe(1);
+    expect(game.possibleShipSquares(0)).toEqual([{ x: 0, y: 0 }]);
+  });
+
   it('applies actions received from the opponent identically', () => {
     // What the joiner's device does with the host's mirrored actions.
     game.apply({ kind: 'place', player: 0, c: { x: 0, y: 0 } });

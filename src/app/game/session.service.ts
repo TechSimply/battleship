@@ -1,6 +1,6 @@
 import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
-import { BOARD_H, BOARD_W, Coord, GameAction, GameService, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
 
 /**
  * Rule 7: game sessions. The host claims the lowest free "Battle{n}" id on
@@ -131,15 +131,11 @@ export class SessionService {
         break;
       case 'fire': {
         if (this.game.currentPlayer() !== 1) return;
-        const usable: Coord[] = [];
-        const human = this.game.players()[0];
-        for (let y = 0; y < BOARD_H; y++) {
-          for (let x = 0; x < BOARD_W; x++) {
-            if (!human.destroyed[y * BOARD_W + x]) usable.push({ x, y });
-          }
-        }
-        if (usable.length) {
-          this.game.apply({ kind: 'fire', player: 1, c: usable[rnd(usable.length)] });
+        // Rule 5.2-5.4 narrow down where the ship provably can be; shoot
+        // randomly within that set instead of anywhere still unbombed.
+        const candidates = this.game.possibleShipSquares(0);
+        if (candidates.length) {
+          this.game.apply({ kind: 'fire', player: 1, c: candidates[rnd(candidates.length)] });
         }
         break;
       }
