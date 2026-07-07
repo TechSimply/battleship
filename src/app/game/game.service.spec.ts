@@ -190,44 +190,6 @@ describe('GameService', () => {
     expect(game.possibleShipSquares(0)).toEqual([{ x: 0, y: 0 }]);
   });
 
-  it('prefers to fire at the most-connected possible square (corners the enemy)', () => {
-    // Player 0 exposed at the interior square (1,1); nothing bombed yet, so the
-    // ship is at one of its 8 neighbours. The bot should target the neighbours
-    // with the most escape routes (the interior ones, degree 8), never the
-    // corner (0,0) with only 3.
-    placeBothShips({ x: 1, y: 1 });
-    click(1, { x: 3, y: 0 }); // player 0 fires, misses -> exposed at (1,1)
-    click(0, { x: 2, y: 1 }); // player 0 forced to move; turn passes to player 1
-    expect(game.currentPlayer()).toBe(1);
-
-    const targets = game.bestFireTargets(0);
-    expect(targets).toEqual(
-      expect.arrayContaining([
-        { x: 2, y: 1 },
-        { x: 1, y: 2 },
-        { x: 2, y: 2 },
-      ]),
-    );
-    expect(targets).toHaveLength(3); // the three interior neighbours, all degree 8
-    expect(targets).not.toContainEqual({ x: 0, y: 0 });
-  });
-
-  it('locks onto the only possible square when the enemy is pinned', () => {
-    // When the possible set is a single square, bestFireTargets returns exactly
-    // it — the guaranteed-kill shot, no randomness to dilute it.
-    placeBothShips({ x: 0, y: 0 });
-    click(1, { x: 0, y: 3 }); // p0 fires at enemy waters, miss -> exposed at (0,0)
-    click(0, { x: 0, y: 1 }); // p0 moves off the corner
-    // Force the deduction down to one square by bombing (0,0)'s free neighbours.
-    game.players.update(([a, b]) => {
-      const destroyed = [...a.destroyed];
-      destroyed[0 * BOARD_W + 1] = true; // (1,0)
-      destroyed[1 * BOARD_W + 1] = true; // (1,1)
-      return [{ ...a, exposedAt: { x: 0, y: 0 }, destroyed }, b];
-    });
-    expect(game.bestFireTargets(0)).toEqual([{ x: 0, y: 1 }]);
-  });
-
   it('applies actions received from the opponent identically', () => {
     // What the joiner's device does with the host's mirrored actions.
     game.apply({ kind: 'place', player: 0, c: { x: 0, y: 0 } });

@@ -131,12 +131,11 @@ export class SessionService {
         break;
       case 'fire': {
         if (this.game.currentPlayer() !== 1) return;
-        // Rules 5.2-5.4 pin down where the ship provably can be, and of those
-        // the best square to bomb is the enemy's most-connected escape square:
-        // it corners them and shrinks the possible set toward a certain kill.
-        const targets = this.game.bestFireTargets(0);
-        if (targets.length) {
-          this.game.apply({ kind: 'fire', player: 1, c: targets[rnd(targets.length)] });
+        // Rule 5.2-5.4 narrow down where the ship provably can be; shoot
+        // randomly within that set instead of anywhere still unbombed.
+        const candidates = this.game.possibleShipSquares(0);
+        if (candidates.length) {
+          this.game.apply({ kind: 'fire', player: 1, c: candidates[rnd(candidates.length)] });
         }
         break;
       }

@@ -151,35 +151,6 @@ export class GameService {
     return moved.length > 0 ? moved : [state.exposedAt];
   }
 
-  /**
-   * The squares the computer opponent should prefer to fire at: among the
-   * provably-possible ship squares (`possibleShipSquares`), the ones with the
-   * most usable neighbours. A shot both risks a hit and permanently removes a
-   * square (rule 5.3). Hitting is equally likely across the candidates — the
-   * enemy's move is hidden — so the tie-breaker that matters is the removal:
-   * knocking out the enemy's best-connected escape square shrinks their world
-   * and herds them toward a corner, where the possible set collapses to one
-   * square and the kill becomes certain. Returns every square tied for the max
-   * (usually one), so the caller can still pick randomly among equals.
-   */
-  bestFireTargets(defender: PlayerId): Coord[] {
-    const candidates = this.possibleShipSquares(defender);
-    if (candidates.length <= 1) return candidates;
-    const destroyed = this.players()[defender].destroyed;
-    let best = -1;
-    let top: Coord[] = [];
-    for (const c of candidates) {
-      const mobility = this.neighborsOf(c, destroyed).length;
-      if (mobility > best) {
-        best = mobility;
-        top = [c];
-      } else if (mobility === best) {
-        top.push(c);
-      }
-    }
-    return top;
-  }
-
   /** Reset the round for a rematch; the session score is kept (rule 8). */
   reset(): void {
     this.phase.set('placement');
