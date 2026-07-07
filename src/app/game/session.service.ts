@@ -294,12 +294,23 @@ export class SessionService {
     peer.on('connection', (conn) => {
       const resume = (conn.metadata as { resume?: boolean } | undefined)?.resume === true;
       conn.on('open', () => {
+        const gameUnderway = this.sentLog.length > 0 || this.receivedCount > 0;
         if (this.state() === 'hosting' && !this.conn) {
           this.attachConnection(conn, 0, false);
         } else if (resume && (this.state() === 'reconnecting' || this.state() === 'playing')) {
           // Our opponent redialling after a drop — maybe before we even
           // noticed it; swap the connection in and resync.
           this.attachConnection(conn, 0, true);
+        } else if (
+          !gameUnderway &&
+          (this.state() === 'playing' || this.state() === 'reconnecting')
+        ) {
+          // No game action has crossed the wire yet, so the connection we're
+          // holding is a stale/ghost dial (see onLost): an invite-link join
+          // whose first attempt the joiner already abandoned, delivered to us
+          // late by the broker after we re-registered. Let this fresh join
+          // replace it rather than refusing it as a full game.
+          this.attachConnection(conn, 0, false);
         } else {
           conn.close(); // game is full
         }
@@ -384,6 +395,21 @@ export class SessionService {
     if (conn !== this.conn) return; // an old connection we already replaced
     if (this.state() !== 'playing') return;
     this.conn = null;
+
+    // If not a single game action ever crossed this connection, it never
+    // really carried a game. That is exactly the invite-link ghost: the
+    // joiner's first dial times out while the host's tab is still backgrounded
+    // and is abandoned, but the broker can hand that stale offer to the host
+    // once it re-registers, opening a one-sided connection the joiner has
+    // already moved on from. Burning the reconnect grace on it would strand the
+    // host in 'disconnected' while the joiner's real retry gets refused as a
+    // full game. So the host just resumes waiting for player 2 (nothing was
+    // played, so nothing is lost); the joiner, with nothing to resume, redials.
+    if (this.myPlayer() === 0 && this.sentLog.length === 0 && this.receivedCount === 0) {
+      this.state.set('hosting');
+      return;
+    }
+
     this.state.set('reconnecting');
     this.graceTimer = setTimeout(() => this.finalizeDisconnect(), RECONNECT_GRACE_MS);
     // The host keeps listening on its stable id; the joiner does the dialling.
