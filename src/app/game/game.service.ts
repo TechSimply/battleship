@@ -105,21 +105,50 @@ export class GameService {
     }
   }
 
-  /** Legal one-square moves: all 8 bordering squares (rule 3) that are usable (rule 5.3). */
-  legalMoves(player: PlayerId): Coord[] {
-    const state = this.players()[player];
-    if (!state.ship) return [];
+  /** Bordering squares of `c` (rule 3) that aren't bombed (rule 5.3). */
+  neighborsOf(c: Coord, destroyed: boolean[]): Coord[] {
     const moves: Coord[] = [];
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
-        const c = { x: state.ship.x + dx, y: state.ship.y + dy };
-        if (c.x < 0 || c.x >= BOARD_W || c.y < 0 || c.y >= BOARD_H) continue;
-        if (state.destroyed[idx(c)]) continue;
-        moves.push(c);
+        const n = { x: c.x + dx, y: c.y + dy };
+        if (n.x < 0 || n.x >= BOARD_W || n.y < 0 || n.y >= BOARD_H) continue;
+        if (destroyed[idx(n)]) continue;
+        moves.push(n);
       }
     }
     return moves;
+  }
+
+  /** Legal one-square moves: all 8 bordering squares (rule 3) that are usable (rule 5.3). */
+  legalMoves(player: PlayerId): Coord[] {
+    const state = this.players()[player];
+    if (!state.ship) return [];
+    return this.neighborsOf(state.ship, state.destroyed);
+  }
+
+  /**
+   * Squares where `player`'s ship could possibly be right now, deducible from
+   * public information alone — no peeking at the real `ship` field. Firing
+   * exposes the exact square (rule 5.2); after that the ship either had to
+   * move to a still-usable bordering square (rule 5.4) or, if none existed,
+   * never moved at all. Everything else is provably impossible. Used by the
+   * computer opponent so it never wastes a shot on a square the rules have
+   * already ruled out, while still choosing randomly among what's left.
+   */
+  possibleShipSquares(player: PlayerId): Coord[] {
+    const state = this.players()[player];
+    if (!state.exposedAt) {
+      const all: Coord[] = [];
+      for (let y = 0; y < BOARD_H; y++) {
+        for (let x = 0; x < BOARD_W; x++) {
+          if (!state.destroyed[y * BOARD_W + x]) all.push({ x, y });
+        }
+      }
+      return all;
+    }
+    const moved = this.neighborsOf(state.exposedAt, state.destroyed);
+    return moved.length > 0 ? moved : [state.exposedAt];
   }
 
   /** Reset the round for a rematch; the session score is kept (rule 8). */
