@@ -17,7 +17,7 @@ $expose-amber: #ffc457;
 .game {
   max-width: 640px;
   margin: 0 auto;
-  padding: 0.6rem 0.75rem 2rem;
+  padding: 0.6rem 0.75rem 1rem;
   text-align: center;
 }
 
@@ -159,6 +159,22 @@ h1 {
   flex-direction: column;
   align-items: center;
   gap: 1.1rem;
+
+  // Rule 2.2's two stacked boards need to both fit on one screen without
+  // scrolling on a normal phone (e.g. iPhone 17). 348px approximates every
+  // bit of chrome around them (topbar, title, scoreboard, status, board
+  // headers/padding, gaps) so `(100dvh - 348px) / 2` is exactly the room
+  // left for one square board — shrinking it as the viewport gets shorter.
+  // 200px is a floor for tap comfort; screens too small to fit that just
+  // scroll, which is fine.
+  --board-size: clamp(200px, min(78vw, 300px, calc((100dvh - 348px) / 2)), 300px);
+}
+
+// The post-game "Play again" button (rendered below .boards) needs its own
+// room, so when it's present the boards must shrink further to keep the
+// gameover screen scroll-free too.
+.game:has(.reset) .boards {
+  --board-size: clamp(200px, min(78vw, 300px, calc((100dvh - 416px) / 2)), 300px);
 }
 
 // Overlay spanning both boards, so a shot can fly from one to the other.
@@ -225,7 +241,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  width: min(78vw, 300px);
+  width: var(--board-size);
   margin: 0 auto 0.55rem;
   min-height: 1.5rem;
 
@@ -300,7 +316,7 @@ h1 {
   position: relative;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  width: min(78vw, 300px);
+  width: var(--board-size);
   margin: 0 auto;
   border-radius: 14px;
   overflow: hidden;
