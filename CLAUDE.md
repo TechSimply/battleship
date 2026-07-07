@@ -48,6 +48,9 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first). The host can copy an
   invite link (`…/?join={n}`, built from `document.baseURI`) that `app.ts` auto-joins on load,
   or share just the number for manual entry (digits-only field with a fixed "Battle" prefix).
+  "Play vs Computer" runs a local bot (session mode `'bot'`, no PeerJS): an effect in
+  `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
+  short thinking delay whenever the game waits on player 1.
 - `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
   is hidden until it is hit or the game ends. Scoreboard under the title.
 - `src/app/app.ts` — swaps between lobby and game based on session state.

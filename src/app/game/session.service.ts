@@ -1,6 +1,6 @@
-import { Injectable, inject, isDevMode, signal } from '@angular/core';
+import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
-import { GameAction, GameService, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, Coord, GameAction, GameService, PlayerId } from './game.service';
 
 /**
  * Rule 7: game sessions. The host claims the lowest free "Battle{n}" id on
@@ -75,11 +75,82 @@ export class SessionService {
   /** One dial attempt at a time — parallel dials would race each other. */
   private dialInFlight = false;
 
+  /** 'p2p' = real opponent over PeerJS; 'bot' = local random computer. */
+  private mode: 'p2p' | 'bot' = 'p2p';
+  private botTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
     if (isDevMode()) {
       // Test hook: sever the live data channel as if the network dropped.
       (globalThis as { __battleshipDrop?: () => void }).__battleshipDrop = () =>
         this.conn?.close();
+    }
+
+    // Computer opponent: whenever the game waits on player 1 (unplaced ship,
+    // or its turn to fire/move), queue one random action after a short
+    // "thinking" pause. Signals are read up front so the effect always
+    // re-arms on the next state change.
+    effect(() => {
+      const phase = this.game.phase();
+      const turn = this.game.currentPlayer();
+      const botPlaced = this.game.players()[1].ship !== null;
+      const playing = this.state() === 'playing';
+      if (this.mode !== 'bot' || !playing || this.botTimer) return;
+      const due =
+        (phase === 'placement' && !botPlaced) ||
+        ((phase === 'fire' || phase === 'move') && turn === 1);
+      if (!due) return;
+      this.botTimer = setTimeout(
+        () => {
+          this.botTimer = null;
+          this.botAct();
+        },
+        phase === 'placement' ? 700 : 900 + Math.random() * 700,
+      );
+    });
+  }
+
+  /** Single-device mode: the opponent is a local computer playing randomly. */
+  playComputer(): void {
+    this.leave(); // drop any half-open session first
+    this.mode = 'bot';
+    this.myPlayer.set(0);
+    this.gameId.set('Computer');
+    this.state.set('playing');
+  }
+
+  /** One random-but-legal computer action for whatever the game waits on. */
+  private botAct(): void {
+    if (this.mode !== 'bot' || this.state() !== 'playing') return;
+    const rnd = (n: number) => Math.floor(Math.random() * n);
+    switch (this.game.phase()) {
+      case 'placement':
+        if (!this.game.players()[1].ship) {
+          this.game.apply({ kind: 'place', player: 1, c: { x: rnd(BOARD_W), y: rnd(BOARD_H) } });
+        }
+        break;
+      case 'fire': {
+        if (this.game.currentPlayer() !== 1) return;
+        const usable: Coord[] = [];
+        const human = this.game.players()[0];
+        for (let y = 0; y < BOARD_H; y++) {
+          for (let x = 0; x < BOARD_W; x++) {
+            if (!human.destroyed[y * BOARD_W + x]) usable.push({ x, y });
+          }
+        }
+        if (usable.length) {
+          this.game.apply({ kind: 'fire', player: 1, c: usable[rnd(usable.length)] });
+        }
+        break;
+      }
+      case 'move': {
+        if (this.game.currentPlayer() !== 1) return;
+        const moves = this.game.legalMoves(1);
+        if (moves.length) {
+          this.game.apply({ kind: 'move', player: 1, c: moves[rnd(moves.length)] });
+        }
+        break;
+      }
     }
   }
 
@@ -159,7 +230,7 @@ export class SessionService {
   act(board: PlayerId, c: { x: number; y: number }): void {
     if (this.state() !== 'playing') return;
     const action = this.game.tryLocal(this.myPlayer(), board, c);
-    if (action) {
+    if (action && this.mode === 'p2p') {
       this.sentLog.push(action);
       this.conn?.send(action);
     }
@@ -168,10 +239,12 @@ export class SessionService {
   /** Rematch on both devices, keeping the connection. */
   playAgain(): void {
     if (this.state() !== 'playing') return;
-    const action: GameAction = { kind: 'reset' };
     this.game.reset();
-    this.sentLog.push(action);
-    this.conn?.send(action);
+    if (this.mode === 'p2p') {
+      const action: GameAction = { kind: 'reset' };
+      this.sentLog.push(action);
+      this.conn?.send(action);
+    }
   }
 
   /** Tear everything down and return to the lobby (rule 7.1). */
@@ -183,6 +256,9 @@ export class SessionService {
     }
     this.clearResumeTimers();
     this.stopReregisterLoop();
+    this.mode = 'p2p';
+    if (this.botTimer) clearTimeout(this.botTimer);
+    this.botTimer = null;
     this.conn?.close({ flush: true }); // let the 'bye' drain before closing
     this.peer?.destroy();
     this.conn = null;
