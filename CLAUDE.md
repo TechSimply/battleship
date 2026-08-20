@@ -77,6 +77,10 @@ for networked/multi-device changes.
 
 ## Conventions & gotchas
 
+- **Bump the app version on every change.** The version shown in the header is the hardcoded
+  string `version` in [`src/app/app.ts`](src/app/app.ts) (e.g. `v0.0.3`). Increment its patch
+  digit as part of each commit that changes app behaviour, so the deployed PWA visibly reflects
+  which build is live.
 - The owner sometimes commits from their IDE with auto-generated messages — **check `git log`
   before committing**.
 - **`gh` CLI is not installed.** For GitHub API use PowerShell `Invoke-RestMethod`; `curl` in Git

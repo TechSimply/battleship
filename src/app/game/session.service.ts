@@ -3,9 +3,10 @@ import Peer, { DataConnection } from 'peerjs';
 import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
 
 /**
- * Rule 7: game sessions. The host claims the lowest free "Battle{n}" id on
- * the PeerJS broker (so ids grow with concurrently running games), shares it,
- * and the joiner connects to it. After that, every game action is applied
+ * Rule 7: game sessions. The host claims a random free "Battle{n}" id on the
+ * PeerJS broker (random, not sequential, so an outsider can't guess a low
+ * number and wander into a running game), shares it, and the joiner connects
+ * to it. After that, every game action is applied
  * locally and mirrored to the opponent over the WebRTC data channel.
  *
  * A dropped connection (network blip, phone backgrounded for a moment) does
@@ -18,7 +19,14 @@ import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.serv
 
 /** Peer-id namespace so we never collide with unrelated PeerJS apps. */
 const PEER_PREFIX = 'techsimply-battleship-battle-';
-const MAX_GAMES = 100;
+/**
+ * Battle ids are random within this range rather than sequential, so an
+ * outsider can't guess a low number and stumble into a running game.
+ */
+const MIN_GAME_ID = 1000;
+const MAX_GAME_ID = 9999;
+/** Give up after this many random collisions (the id space is ~9000 wide). */
+const MAX_CLAIM_ATTEMPTS = 50;
 /** How long a dropped game keeps trying to resume before giving up. */
 const RECONNECT_GRACE_MS = 45_000;
 /** How often the joiner redials the host while resuming. */
@@ -44,7 +52,7 @@ export function parseGameId(input: string): number | null {
   const m = input.trim().match(/^(?:battle\s*)?(\d{1,4})$/i);
   if (!m) return null;
   const n = parseInt(m[1], 10);
-  return n >= 1 && n <= MAX_GAMES ? n : null;
+  return n >= 1 && n <= MAX_GAME_ID ? n : null;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -150,11 +158,11 @@ export class SessionService {
     }
   }
 
-  /** Rule 7.2: claim the lowest free Battle{n} id, then wait for player 2. */
+  /** Rule 7.2: claim a random free Battle{n} id, then wait for player 2. */
   newGame(): void {
     this.errorMsg.set(null);
     this.state.set('hosting');
-    this.claimGameId(1);
+    this.claimGameId();
   }
 
   /**
@@ -269,16 +277,17 @@ export class SessionService {
     this.state.set('lobby');
   }
 
-  private claimGameId(n: number): void {
-    if (n > MAX_GAMES) {
-      this.fail('All game ids are busy right now — try again in a minute.');
+  private claimGameId(attempt = 0): void {
+    if (attempt >= MAX_CLAIM_ATTEMPTS) {
+      this.fail('Couldn’t start a game right now — please try again.');
       return;
     }
+    const n = MIN_GAME_ID + Math.floor(Math.random() * (MAX_GAME_ID - MIN_GAME_ID + 1));
     const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
       if (err.type === 'unavailable-id') {
-        // Battle{n} is an active game — try the next number.
+        // That random id is already an active game — pick a different one.
         peer.destroy();
-        if (this.state() === 'hosting') this.claimGameId(n + 1);
+        if (this.state() === 'hosting') this.claimGameId(attempt + 1);
         return true;
       }
       return false;
