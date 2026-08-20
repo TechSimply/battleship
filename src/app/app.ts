@@ -13,6 +13,9 @@ import { SessionService } from './game/session.service';
 export class App {
   protected readonly session = inject(SessionService);
 
+  /** Shown in the top-left corner on every screen. */
+  protected readonly version = 'v0.0.1';
+
   constructor() {
     // Invite links (…/?join=3) drop the opponent straight into the joining
     // flow — no typing. Strip the param so a refresh doesn't re-join.
