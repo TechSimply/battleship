@@ -15,6 +15,11 @@ import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.serv
  * sync handshake replays whatever actions each side missed, so the
  * deterministic engines land back in the same state. Only a deliberate Leave
  * (which sends 'bye') or an expired grace period ends the session.
+ *
+ * Because a phone freezes a backgrounded tab's broker socket, returning to the
+ * foreground triggers an immediate broker re-register (so Battle{n} is
+ * reclaimed at once), and a screen wake lock is held for the duration of a live
+ * game to make the OS less eager to suspend the host while it waits.
  */
 
 /** Peer-id namespace so we never collide with unrelated PeerJS apps. */
@@ -46,6 +51,15 @@ type WireMessage =
   | GameAction
   | { kind: 'sync'; received: number } // resume: how many of your actions I have
   | { kind: 'bye' }; // deliberate leave — don't wait for a resume
+
+/** Minimal shape of the Screen Wake Lock API (not in every TS DOM lib). */
+interface WakeLockSentinelLike {
+  release(): Promise<void>;
+  addEventListener(type: 'release', listener: () => void): void;
+}
+type WakeLockNavigator = Navigator & {
+  wakeLock?: { request(type: 'screen'): Promise<WakeLockSentinelLike> };
+};
 
 /** "Battle3", "battle 3" or plain "3" → 3; null when unparseable. */
 export function parseGameId(input: string): number | null {
@@ -87,12 +101,36 @@ export class SessionService {
   private mode: 'p2p' | 'bot' = 'p2p';
   private botTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Held while a game is live so the OS keeps the tab awake (best-effort). */
+  private wakeLock: WakeLockSentinelLike | null = null;
+
   constructor() {
     if (isDevMode()) {
       // Test hook: sever the live data channel as if the network dropped.
       (globalThis as { __battleshipDrop?: () => void }).__battleshipDrop = () =>
         this.conn?.close();
     }
+
+    // Mobile tabs freeze their broker socket when backgrounded — exactly what
+    // happens when the host switches to a messaging app to send the invite,
+    // which drops Battle{n} off the broker. The moment we're visible again,
+    // force an immediate re-register (rather than waiting out the throttled
+    // retry timer) and re-take the wake lock the browser dropped on hide.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => this.onVisible());
+    }
+
+    // Keep the screen (and thus this tab) alive while a game is live so a host
+    // waiting for an opponent isn't suspended by the OS. Released as soon as we
+    // fall back to the lobby / a dead session.
+    effect(() => {
+      const s = this.state();
+      if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing' || s === 'reconnecting')) {
+        void this.acquireWakeLock();
+      } else {
+        this.releaseWakeLock();
+      }
+    });
 
     // Computer opponent: whenever the game waits on player 1 (unplaced ship,
     // or its turn to fire/move), queue one random action after a short
@@ -397,6 +435,52 @@ export class SessionService {
       this.reregisterTimer = setTimeout(tick, 3_000);
     };
     this.reregisterTimer = setTimeout(tick, 1_000);
+  }
+
+  /**
+   * Tab came back to the foreground. If our signalling peer's broker socket
+   * dropped while we were away, reconnect it immediately so Battle{n} is
+   * reclaimed at once instead of after the throttled retry tick — then re-take
+   * the wake lock the browser released when we were hidden.
+   */
+  private onVisible(): void {
+    if (document.visibilityState !== 'visible') return;
+    const peer = this.peer;
+    if (peer && !peer.destroyed && peer.disconnected) {
+      try {
+        peer.reconnect();
+      } catch {
+        // already mid-reconnect — the keepRegistered loop covers us
+      }
+      this.keepRegistered(peer);
+    }
+    const s = this.state();
+    if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing' || s === 'reconnecting')) {
+      void this.acquireWakeLock();
+    }
+  }
+
+  /** Best-effort screen wake lock; unsupported browsers just no-op. */
+  private async acquireWakeLock(): Promise<void> {
+    if (this.wakeLock) return;
+    try {
+      const wl = await (navigator as WakeLockNavigator).wakeLock?.request('screen');
+      if (!wl) return;
+      this.wakeLock = wl;
+      // The browser drops the lock whenever the tab hides; reflect that so the
+      // next foreground (onVisible) re-acquires instead of thinking we hold it.
+      wl.addEventListener('release', () => {
+        if (this.wakeLock === wl) this.wakeLock = null;
+      });
+    } catch {
+      // denied or unsupported — nothing we can do, and nothing lost
+    }
+  }
+
+  private releaseWakeLock(): void {
+    const wl = this.wakeLock;
+    this.wakeLock = null;
+    wl?.release().catch(() => {});
   }
 
   /** The data channel died while playing — start the resume window. */
