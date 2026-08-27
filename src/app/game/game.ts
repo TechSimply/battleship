@@ -1,4 +1,14 @@
-import { Component, ElementRef, computed, effect, inject, untracked } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+} from '@angular/core';
 import { BOARD_H, BOARD_W, Coord, GameService, PlayerId } from './game.service';
 import { SessionService } from './session.service';
 
@@ -20,6 +30,41 @@ interface BoardVM {
   cells: CellVM[];
 }
 
+/**
+ * A rocket's burning exhaust, left on screen until its owner fires again.
+ * `from`/`to` are kept so the trail can be re-measured when the boards resize;
+ * `transform`/`width` are what the template actually draws.
+ */
+interface TrailVM {
+  /** The shot's sequence number: a fresh id gives the next rocket of the same
+   * player a brand-new element, so its flame is drawn from scratch. */
+  id: number;
+  shooter: PlayerId;
+  /** True when this device's own rocket left the trail (picks the flame colour
+   * and which board each end of the trail sits on). */
+  mine: boolean;
+  from: Coord;
+  to: Coord;
+  transform: string;
+  width: number;
+}
+
+/** The in-flight rocket; null between shots. */
+interface RocketVM {
+  mine: boolean;
+  transform: string;
+}
+
+/** Pixel geometry of one shot, measured inside the shot layer. */
+interface ShotGeom {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  angle: number;
+  len: number;
+}
+
 @Component({
   selector: 'app-game',
   host: { id: 'game-component' },
@@ -30,13 +75,39 @@ export class Game {
   protected readonly game = inject(GameService);
   protected readonly session = inject(SessionService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly destroyRef = inject(DestroyRef);
+
+  /**
+   * At most one burning trail per player — the newest rocket replaces it.
+   * Rendered from the template (not appended by hand) so the component's
+   * emulated style encapsulation actually reaches the flame.
+   */
+  protected readonly trails = signal<TrailVM[]>([]);
+  protected readonly rocket = signal<RocketVM | null>(null);
+  private rocketTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
-    // Tracer: fly a shell from the shooter's (exposed) square to the bombed
+    // Tracer: fly a rocket from the shooter's (exposed) square to the bombed
     // square, so the exposure visibly originates from the shot.
     effect(() => {
       const shot = this.game.lastShot();
       if (shot) untracked(() => this.animateShot(shot));
+    });
+
+    // A new round starts from clean water: no rockets have been fired yet.
+    effect(() => {
+      if (this.game.phase() === 'placement') untracked(() => this.clearTrails());
+    });
+
+    // Trails are positioned in pixels, so they have to be re-measured whenever
+    // the boards change size (rotation, keyboard, browser chrome collapsing).
+    afterNextRender(() => {
+      const obs = new ResizeObserver(() => this.relayoutTrails());
+      obs.observe(this.host.nativeElement);
+      this.destroyRef.onDestroy(() => {
+        obs.disconnect();
+        clearTimeout(this.rocketTimer);
+      });
     });
   }
 
@@ -130,20 +201,99 @@ export class Game {
     return { id, mine, cells };
   }
 
-  /** Fly a shell across the boards; state markers land with a matching delay. */
-  private animateShot(shot: { shooter: PlayerId; from: Coord | null; to: Coord }): void {
+  /**
+   * Fly a rocket across the boards and leave its exhaust burning behind it.
+   * State markers land with a matching delay; the trail stays put until the
+   * same player fires again (each shooter owns exactly one trail).
+   */
+  private animateShot(shot: {
+    shooter: PlayerId;
+    from: Coord | null;
+    to: Coord;
+    n: number;
+  }): void {
     if (!shot.from) return;
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const layer = this.shotLayer();
+    const mine = shot.shooter === this.session.myPlayer();
+    const geom = layer && this.measure(layer, shot.from, shot.to, mine);
+    if (!geom) return;
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const launch = `translate(${geom.ax}px, ${geom.ay}px) rotate(${geom.angle}deg)`;
+
+    // The flame replaces this shooter's previous one and starts with no length:
+    // it is painted on as the rocket travels, growing to the full flight
+    // distance over exactly the flight time (the width transition in game.scss).
+    this.trails.update((trails) => [
+      ...trails.filter((t) => t.shooter !== shot.shooter),
+      {
+        id: shot.n,
+        shooter: shot.shooter,
+        mine,
+        from: shot.from!,
+        to: shot.to,
+        transform: launch,
+        width: still ? geom.len : 0,
+      },
+    ]);
+    if (still) return; // the standing trail tells the story; nothing flies
+
+    clearTimeout(this.rocketTimer);
+    this.rocket.set({ mine, transform: launch });
+    // Two frames: the launch position has to be rendered and painted before the
+    // target transform can transition away from it.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const impact = `translate(${geom.bx}px, ${geom.by}px) rotate(${geom.angle}deg)`;
+        this.rocket.update((r) => (r ? { ...r, transform: impact } : r));
+        this.trails.update((trails) =>
+          trails.map((t) => (t.id === shot.n ? { ...t, width: geom.len } : t)),
+        );
+      }),
+    );
+    // The rocket is consumed on impact — normally by its own transitionend,
+    // with this as the safety net if that event never arrives.
+    this.rocketTimer = setTimeout(() => this.rocket.set(null), 1000);
+  }
+
+  /** Re-measure every standing trail after the boards change size. */
+  private relayoutTrails(): void {
+    const layer = this.shotLayer();
+    if (!layer || this.trails().length === 0) return;
+    this.trails.update((trails) =>
+      trails.flatMap((t) => {
+        const geom = this.measure(layer, t.from, t.to, t.mine);
+        if (!geom) return [];
+        return [
+          {
+            ...t,
+            transform: `translate(${geom.ax}px, ${geom.ay}px) rotate(${geom.angle}deg)`,
+            width: geom.len,
+          },
+        ];
+      }),
+    );
+  }
+
+  private clearTrails(): void {
+    this.trails.set([]);
+    this.rocket.set(null);
+  }
+
+  private shotLayer(): HTMLElement | null {
+    return this.host.nativeElement.querySelector<HTMLElement>('#shot-layer');
+  }
+
+  /**
+   * Centre-to-centre geometry of a shot, in shot-layer coordinates. A shot
+   * always crosses the two boards: the shooter's square is on their own board,
+   * the target square on the board being bombed.
+   */
+  private measure(layer: HTMLElement, from: Coord, to: Coord, mine: boolean): ShotGeom | null {
     const root = this.host.nativeElement;
-    const layer = root.querySelector<HTMLElement>('#shot-layer');
-    const mineShot = shot.shooter === this.session.myPlayer();
-    const fromEl = root.querySelector(
-      `#${mineShot ? 'fleet' : 'enemy'}-cell-${shot.from.x}-${shot.from.y}`,
-    );
-    const toEl = root.querySelector(
-      `#${mineShot ? 'enemy' : 'fleet'}-cell-${shot.to.x}-${shot.to.y}`,
-    );
-    if (!layer || !fromEl || !toEl) return;
+    const fromEl = root.querySelector(`#${mine ? 'fleet' : 'enemy'}-cell-${from.x}-${from.y}`);
+    const toEl = root.querySelector(`#${mine ? 'enemy' : 'fleet'}-cell-${to.x}-${to.y}`);
+    if (!fromEl || !toEl) return null;
 
     const lr = layer.getBoundingClientRect();
     const a = fromEl.getBoundingClientRect();
@@ -152,18 +302,13 @@ export class Game {
     const ay = a.top + a.height / 2 - lr.top;
     const bx = b.left + b.width / 2 - lr.left;
     const by = b.top + b.height / 2 - lr.top;
-    const angle = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
-
-    const shell = document.createElement('div');
-    shell.className = 'shell';
-    shell.style.transform = `translate(${ax}px, ${ay}px) rotate(${angle}deg)`;
-    layer.appendChild(shell);
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        shell.style.transform = `translate(${bx}px, ${by}px) rotate(${angle}deg)`;
-      }),
-    );
-    shell.addEventListener('transitionend', () => shell.remove());
-    setTimeout(() => shell.remove(), 1000); // safety net if the event never fires
+    return {
+      ax,
+      ay,
+      bx,
+      by,
+      angle: (Math.atan2(by - ay, bx - ax) * 180) / Math.PI,
+      len: Math.hypot(bx - ax, by - ay),
+    };
   }
 }

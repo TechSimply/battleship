@@ -29,7 +29,28 @@
     >{{ message() }}@if (session.state() === 'reconnecting') {<span class="dots"></span>}</p>
 
     <div id="boards" class="boards">
-      <div id="shot-layer" class="shot-layer" aria-hidden="true"></div>
+      <div id="shot-layer" class="shot-layer" aria-hidden="true">
+        <!-- One standing flame per player: the exhaust of their last rocket,
+             left burning until that same player fires the next one. -->
+        @for (trail of trails(); track trail.id) {
+          <div
+            class="trail"
+            [class.mine]="trail.mine"
+            [class.enemy]="!trail.mine"
+            [style.transform]="trail.transform"
+            [style.width.px]="trail.width"
+          ></div>
+        }
+        @if (rocket(); as shot) {
+          <div
+            class="shell"
+            [class.mine]="shot.mine"
+            [class.enemy]="!shot.mine"
+            [style.transform]="shot.transform"
+            (transitionend)="rocket.set(null)"
+          ></div>
+        }
+      </div>
       @for (board of boards(); track board.id) {
         <section
           [id]="(board.mine ? 'fleet' : 'enemy') + '-board-wrap'"

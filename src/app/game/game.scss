@@ -185,21 +185,110 @@ h1 {
   pointer-events: none;
 }
 
-// The tracer shell: a glowing capsule, rotated toward its target and flown
-// there via a transform transition (set imperatively in game.ts).
+// Rocket flight: the trail is painted on over exactly this duration, with the
+// same easing, so the flame appears to be drawn by the rocket itself.
+$flight: 0.32s;
+$flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
+
+// Flame palette per shooter: my rocket burns gold, the enemy's ember red, so a
+// board holding both standing trails still says at a glance who fired which.
+.shell.mine,
+.trail.mine {
+  --flame-hot: 255, 240, 205;
+  --flame-mid: 255, 178, 70;
+  --flame-low: 255, 120, 30;
+}
+
+.shell.enemy,
+.trail.enemy {
+  --flame-hot: 255, 232, 214;
+  --flame-mid: 255, 122, 88;
+  --flame-low: 255, 60, 40;
+}
+
+// The rocket itself. Both ends of its transform point it along +x, so the
+// exhaust always streams off to the left of the sprite.
 .shell {
   position: absolute;
-  top: -3px; // negative offsets centre the capsule on its coordinate
+  top: -3px; // negative offsets centre the rocket on its coordinate
   left: -9px;
   width: 18px;
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(126, 220, 248, 0), #cdeffb 55%, #fff);
+  background: linear-gradient(90deg, rgba(var(--flame-mid), 1), rgba(var(--flame-hot), 1) 60%, #fff);
   box-shadow:
-    0 0 10px rgba(140, 220, 250, 0.9),
-    0 0 22px rgba(79, 216, 235, 0.5);
-  transition: transform 0.32s cubic-bezier(0.5, 0, 0.9, 0.6);
+    0 0 10px rgba(var(--flame-mid), 0.95),
+    0 0 22px rgba(var(--flame-low), 0.55);
+  transition: transform $flight $flight-ease;
   will-change: transform;
+
+  // Exhaust plume: a tapered jet streaming back from the nozzle, flickering
+  // fast enough to read as burning rather than as a static shape.
+  &::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    right: 11px;
+    width: 26px;
+    height: 8px;
+    border-radius: 999px 40% 40% 999px / 999px 50% 50% 999px;
+    background: linear-gradient(
+      90deg,
+      rgba(var(--flame-low), 0) 0%,
+      rgba(var(--flame-low), 0.6) 45%,
+      rgba(var(--flame-mid), 0.95) 80%,
+      rgba(var(--flame-hot), 1) 100%
+    );
+    transform-origin: 100% 50%;
+    animation: exhaust-flicker 0.14s steps(2, end) infinite;
+  }
+}
+
+// The standing flame trail. Anchored at the launch square (transform-origin on
+// its left edge) and rotated toward the target, so growing its width sweeps the
+// flame along the rocket's path. Hottest at the impact end, fading to nothing
+// at the launch square — the near end has had the longest to burn out. It stays
+// lit until the same player fires again: game.ts keeps one trail element per
+// shooter and the next rocket replaces it.
+.trail {
+  position: absolute;
+  top: -3px; // half the height: puts the anchor on the element's left-middle
+  left: 0;
+  height: 6px;
+  transform-origin: 0 50%;
+  border-radius: 999px;
+  pointer-events: none;
+  mix-blend-mode: screen; // additive over the dark sea, never a flat overlay
+  background: linear-gradient(
+    90deg,
+    rgba(var(--flame-low), 0) 0%,
+    rgba(var(--flame-low), 0.32) 40%,
+    rgba(var(--flame-mid), 0.72) 86%,
+    rgba(var(--flame-hot), 0.9) 100%
+  );
+  box-shadow: 0 0 14px rgba(var(--flame-mid), 0.4);
+  transition: width $flight $flight-ease;
+  will-change: width;
+  animation: trail-smoulder 2.4s ease-in-out $flight infinite;
+
+  // The fire still burning where the rocket struck.
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: -7px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(var(--flame-hot), 0.85) 0%,
+      rgba(var(--flame-mid), 0.55) 40%,
+      rgba(var(--flame-low), 0) 70%
+    );
+    transform: translateY(-50%);
+    animation: ember-flicker 1.1s ease-in-out $flight infinite;
+  }
 }
 
 .board-wrap {
@@ -640,6 +729,55 @@ h1 {
   }
 }
 
+// Fast, hard-stepped jitter — a jet of burning fuel, not a pulsing glow.
+@keyframes exhaust-flicker {
+  0% {
+    transform: scaleX(1) scaleY(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleX(0.82) scaleY(0.7);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scaleX(1.06) scaleY(1.1);
+    opacity: 0.95;
+  }
+}
+
+// The standing trail keeps breathing so it reads as fire, not as a drawn line.
+@keyframes trail-smoulder {
+  0%,
+  100% {
+    opacity: 0.9;
+    filter: saturate(1.05);
+  }
+  38% {
+    opacity: 0.62;
+    filter: saturate(0.85);
+  }
+  71% {
+    opacity: 0.82;
+    filter: saturate(1.15);
+  }
+}
+
+@keyframes ember-flicker {
+  0%,
+  100% {
+    transform: translateY(-50%) scale(1);
+    opacity: 0.9;
+  }
+  45% {
+    transform: translateY(-50%) scale(0.78);
+    opacity: 0.55;
+  }
+  75% {
+    transform: translateY(-50%) scale(1.12);
+    opacity: 0.8;
+  }
+}
+
 // Respect users who opt out of motion: keep every state readable, just still.
 @media (prefers-reduced-motion: reduce) {
   .board::before,
@@ -649,7 +787,11 @@ h1 {
   .cell.move-target,
   .cell.destroyed::after,
   .cell.ship-destroyed,
-  .shell {
+  .shell,
+  .shell::before,
+  // The trail is state, not decoration — it stays drawn, it just stops burning.
+  .trail,
+  .trail::after {
     animation: none;
     transition: none;
   }
