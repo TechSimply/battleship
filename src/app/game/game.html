@@ -102,6 +102,7 @@
                 [class.ship-destroyed]="cell.shipDestroyed"
                 [class.exposed]="cell.exposed"
                 [class.move-target]="cell.moveTarget"
+                [class.hint]="cell.hint"
                 (click)="onCellClick(board, cell)"
               >
                 @if (cell.shipDestroyed) {

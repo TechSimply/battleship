@@ -630,6 +630,20 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
       inset 0 0 10px rgba(255, 196, 87, 0.1);
   }
 
+  // Enemy waters: squares their ship could still be on. A quiet sonar contact —
+  // it must read as "look here", never compete with the flame or the craters.
+  // Placed after &.exposed so a trapped ship (nowhere to move, so its own
+  // exposed square is the only candidate) shows as a contact, not as history.
+  &.hint {
+    background: radial-gradient(
+      circle at 50% 50%,
+      rgba(79, 216, 235, 0.16),
+      rgba(79, 216, 235, 0.02) 72%
+    );
+    box-shadow: inset 0 0 0 1px rgba(79, 216, 235, 0.32);
+    animation: contact-sweep 2.2s ease-in-out infinite;
+  }
+
   // Squares the exposed ship may escape to: arrows pointing the way out.
   &.move-target {
     color: #8ee2f8;
@@ -667,6 +681,20 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
   50% {
     transform: translateY(4%) rotate(1.2deg);
+  }
+}
+
+// Slow breathing contact, offset per column so the candidates shimmer as a
+// group rather than blinking in lockstep.
+@keyframes contact-sweep {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1px rgba(79, 216, 235, 0.32);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 1px rgba(79, 216, 235, 0.5),
+      inset 0 0 12px rgba(79, 216, 235, 0.16);
   }
 }
 
@@ -812,6 +840,17 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
 }
 
+// Stagger the contacts by column so the shimmer sweeps rather than blinks.
+.cell.hint:nth-child(4n + 2) {
+  animation-delay: 0.15s;
+}
+.cell.hint:nth-child(4n + 3) {
+  animation-delay: 0.3s;
+}
+.cell.hint:nth-child(4n) {
+  animation-delay: 0.45s;
+}
+
 // Respect users who opt out of motion: keep every state readable, just still.
 @media (prefers-reduced-motion: reduce) {
   .board::before,
@@ -819,6 +858,7 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   .tap-cue svg,
   .cell .icon,
   .cell.move-target,
+  .cell.hint,
   .cell.destroyed::after,
   .cell.ship-destroyed,
   .shell,

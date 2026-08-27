@@ -63,6 +63,10 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   shot. Rocket and trails are rendered from the template (never `createElement` — the
   component's emulated encapsulation would not style hand-made elements) and anchored to
   cell centres in pixels, so `fitAndRealign()` re-measures them after every refit.
+  On your fire turn, enemy waters also mark the squares their ship must be on —
+  `possibleShipSquares()`, the same deduction the bot fires by, so the hint reveals
+  nothing a player could not derive from the flame and the craters. Shown only once
+  the enemy has fired (before that every unbombed square qualifies).
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.
 

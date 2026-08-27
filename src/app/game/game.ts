@@ -20,6 +20,8 @@ interface CellVM {
   shipDestroyed: boolean;
   exposed: boolean;
   moveTarget: boolean;
+  /** Enemy waters: a square the enemy ship could still be on (rules 5.2/5.4). */
+  hint: boolean;
   /** Rotation (deg) of the move arrow — points away from the ship. */
   moveDir: number;
 }
@@ -192,6 +194,18 @@ export class Game {
     const moveTargets =
       mine && this.game.phase() === 'move' && this.myTurn() ? this.game.legalMoves(id) : [];
 
+    // Where the enemy ship must be, deduced from public state alone: firing
+    // exposed their square (rule 5.2) and the forced move (rule 5.4) put them
+    // on one of its usable neighbours. The bot already fires by this same
+    // deduction, so showing it just spares the player the arithmetic — it
+    // reveals nothing they could not work out from the board. Only while
+    // choosing a shot, and only once they have fired: before that every
+    // unbombed square qualifies and the highlight would be noise.
+    const hints =
+      !mine && this.game.phase() === 'fire' && this.myTurn() && state.exposedAt
+        ? this.game.possibleShipSquares(id)
+        : [];
+
     const cells: CellVM[] = [];
     for (let y = 0; y < BOARD_H; y++) {
       for (let x = 0; x < BOARD_W; x++) {
@@ -207,6 +221,7 @@ export class Game {
           // the enemy must see the exposure even while the ship still sits there.
           exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !shipVisible,
           moveTarget: moveTargets.some((m) => m.x === x && m.y === y),
+          hint: hints.some((h) => h.x === x && h.y === y),
           // Arrow points from the ship outward to this escape square.
           moveDir: state.ship
             ? (Math.atan2(y - state.ship.y, x - state.ship.x) * 180) / Math.PI
