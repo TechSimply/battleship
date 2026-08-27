@@ -1,4 +1,13 @@
-import { Component, ElementRef, computed, effect, inject, untracked } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterEveryRender,
+  computed,
+  effect,
+  inject,
+  untracked,
+} from '@angular/core';
 import { BOARD_H, BOARD_W, Coord, GameService, PlayerId } from './game.service';
 import { SessionService } from './session.service';
 
@@ -20,6 +29,10 @@ interface BoardVM {
   cells: CellVM[];
 }
 
+/** Bounds for the measured board size, in px: playable floor, tidy ceiling. */
+const MIN_BOARD = 32;
+const MAX_BOARD = 420;
+
 @Component({
   selector: 'app-game',
   host: { id: 'game-component' },
@@ -37,6 +50,22 @@ export class Game {
     effect(() => {
       const shot = this.game.lastShot();
       if (shot) untracked(() => this.animateShot(shot));
+    });
+
+    // Keep the boards fitted to the leftover space after every render — the
+    // status text can rewrap and the post-game button comes and goes.
+    afterEveryRender(() => this.fitBoards());
+
+    // Viewport changes (rotation, browser chrome, on-screen keyboard) don't
+    // run change detection, so listen for them directly.
+    const refit = () => this.fitBoards();
+    addEventListener('resize', refit);
+    addEventListener('orientationchange', refit);
+    visualViewport?.addEventListener('resize', refit);
+    inject(DestroyRef).onDestroy(() => {
+      removeEventListener('resize', refit);
+      removeEventListener('orientationchange', refit);
+      visualViewport?.removeEventListener('resize', refit);
     });
   }
 
@@ -128,6 +157,36 @@ export class Game {
       }
     }
     return { id, mine, cells };
+  }
+
+  /**
+   * Rule 2.2's two stacked boards must share one screen with no scrolling.
+   * `.boards` is the flex row that absorbs whatever height the chrome leaves
+   * over, so measuring it needs no hardcoded chrome estimate: the boards are
+   * sized to exactly half of that space (minus one board panel's own padding
+   * and header), and shrink — "zoom out" — as the viewport gets smaller.
+   */
+  private fitBoards(): void {
+    const boards = this.host.nativeElement.querySelector<HTMLElement>('#boards');
+    const wrap = boards?.querySelector<HTMLElement>('.board-wrap');
+    const board = boards?.querySelector<HTMLElement>('.board');
+    if (!boards || !wrap || !board) return;
+
+    const free = boards.getBoundingClientRect();
+    if (!free.width || !free.height) return; // not laid out (or hidden) yet
+
+    // What one panel costs around its board. Constant in the board's size —
+    // the board itself is border-box and exactly `--board-size` square — so a
+    // single measurement pass lands on the final value.
+    const panelX = wrap.offsetWidth - board.offsetWidth;
+    const panelY = wrap.offsetHeight - board.offsetHeight;
+    const gap = parseFloat(getComputedStyle(boards).rowGap) || 0;
+
+    const size = Math.min(free.width - panelX, (free.height - gap) / 2 - panelY, MAX_BOARD);
+    const fitted = `${Math.max(Math.floor(size), MIN_BOARD)}px`;
+    if (boards.style.getPropertyValue('--board-size') !== fitted) {
+      boards.style.setProperty('--board-size', fitted);
+    }
   }
 
   /** Fly a shell across the boards; state markers land with a matching delay. */
