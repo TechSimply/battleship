@@ -1,22 +1,24 @@
 <main id="game-screen" class="game">
+  <h1 id="game-title" class="sr-only">Battleship</h1>
+
+  <!-- One dense session row: game id, running score (rule 8) and the exit. -->
   <header id="game-topbar" class="topbar">
     <span id="game-tag" class="game-tag">{{ session.gameId() }}</span>
+
+    <div id="scoreboard" class="scoreboard">
+      <span id="my-score" class="score">
+        <span class="score-name">You</span>
+        <span class="score-value">{{ myScore() }}</span>
+      </span>
+      <span id="score-sep" class="score-sep">–</span>
+      <span id="enemy-score" class="score">
+        <span class="score-value">{{ enemyScore() }}</span>
+        <span class="score-name">Enemy</span>
+      </span>
+    </div>
+
     <button id="leave-btn" class="leave" (click)="session.leave()">Leave</button>
   </header>
-
-  <h1 id="game-title">Battleship</h1>
-
-  <div id="scoreboard" class="scoreboard">
-    <span id="my-score" class="score">
-      <span class="score-name">You</span>
-      <span class="score-value">{{ myScore() }}</span>
-    </span>
-    <span id="score-sep" class="score-sep">–</span>
-    <span id="enemy-score" class="score">
-      <span class="score-value">{{ enemyScore() }}</span>
-      <span class="score-name">Enemy</span>
-    </span>
-  </div>
 
   @if (session.state() === 'disconnected') {
     <p id="disconnected-status" class="status error">Opponent disconnected</p>

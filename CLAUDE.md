@@ -52,7 +52,17 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
   short thinking delay whenever the game waits on player 1.
 - `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
-  is hidden until it is hit or the game ends. Scoreboard under the title.
+  is hidden until it is hit or the game ends. It is a fixed, viewport-sized column
+  that never scrolls: one dense top row (game id · score · leave), the status pill,
+  then the boards taking all the space that's left. `fitBoards()` measures that
+  leftover space after every render (and on resize/rotation) and sets `--board-size`,
+  so the two boards always fit exactly; the chrome itself scales with the `--ui`
+  clamp, zooming out on smaller screens.
+  Firing flies a rocket from the shooter's square to the bombed square and leaves its
+  burning exhaust behind: one trail per player, replaced only by that same player's next
+  shot. Rocket and trails are rendered from the template (never `createElement` — the
+  component's emulated encapsulation would not style hand-made elements) and anchored to
+  cell centres in pixels, so `fitAndRealign()` re-measures them after every refit.
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.
 

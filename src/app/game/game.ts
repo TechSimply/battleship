@@ -2,7 +2,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
-  afterNextRender,
+  afterEveryRender,
   computed,
   effect,
   inject,
@@ -47,6 +47,9 @@ interface TrailVM {
   to: Coord;
   transform: string;
   width: number;
+  /** True while the flame is still being painted on behind the rocket: a
+   * re-measure must leave its width alone or the grow animation is cut short. */
+  growing: boolean;
 }
 
 /** The in-flight rocket; null between shots. */
@@ -64,6 +67,10 @@ interface ShotGeom {
   angle: number;
   len: number;
 }
+
+/** Bounds for the measured board size, in px: playable floor, tidy ceiling. */
+const MIN_BOARD = 32;
+const MAX_BOARD = 420;
 
 @Component({
   selector: 'app-game',
@@ -99,15 +106,24 @@ export class Game {
       if (this.game.phase() === 'placement') untracked(() => this.clearTrails());
     });
 
-    // Trails are positioned in pixels, so they have to be re-measured whenever
-    // the boards change size (rotation, keyboard, browser chrome collapsing).
-    afterNextRender(() => {
-      const obs = new ResizeObserver(() => this.relayoutTrails());
-      obs.observe(this.host.nativeElement);
-      this.destroyRef.onDestroy(() => {
-        obs.disconnect();
-        clearTimeout(this.rocketTimer);
-      });
+    // Keep the boards fitted to the leftover space after every render — the
+    // status text can rewrap and the post-game button comes and goes. Standing
+    // trails are anchored to cell centres in pixels, so every refit has to be
+    // followed by a re-measure or the flames keep the geometry of the board
+    // size they were fired at.
+    afterEveryRender(() => this.fitAndRealign());
+
+    // Viewport changes (rotation, browser chrome, on-screen keyboard) don't
+    // run change detection, so listen for them directly.
+    const refit = () => this.fitAndRealign();
+    addEventListener('resize', refit);
+    addEventListener('orientationchange', refit);
+    visualViewport?.addEventListener('resize', refit);
+    this.destroyRef.onDestroy(() => {
+      removeEventListener('resize', refit);
+      removeEventListener('orientationchange', refit);
+      visualViewport?.removeEventListener('resize', refit);
+      clearTimeout(this.rocketTimer);
     });
   }
 
@@ -202,6 +218,46 @@ export class Game {
   }
 
   /**
+   * Rule 2.2's two stacked boards must share one screen with no scrolling.
+   * `.boards` is the flex row that absorbs whatever height the chrome leaves
+   * over, so measuring it needs no hardcoded chrome estimate: the boards are
+   * sized to exactly half of that space (minus one board panel's own padding
+   * and header), and shrink — "zoom out" — as the viewport gets smaller.
+   */
+  private fitBoards(): void {
+    const boards = this.host.nativeElement.querySelector<HTMLElement>('#boards');
+    const wrap = boards?.querySelector<HTMLElement>('.board-wrap');
+    const board = boards?.querySelector<HTMLElement>('.board');
+    if (!boards || !wrap || !board) return;
+
+    const free = boards.getBoundingClientRect();
+    if (!free.width || !free.height) return; // not laid out (or hidden) yet
+
+    // What one panel costs around its board. Constant in the board's size —
+    // the board itself is border-box and exactly `--board-size` square — so a
+    // single measurement pass lands on the final value.
+    const panelX = wrap.offsetWidth - board.offsetWidth;
+    const panelY = wrap.offsetHeight - board.offsetHeight;
+    const gap = parseFloat(getComputedStyle(boards).rowGap) || 0;
+
+    const size = Math.min(free.width - panelX, (free.height - gap) / 2 - panelY, MAX_BOARD);
+    const fitted = `${Math.max(Math.floor(size), MIN_BOARD)}px`;
+    if (boards.style.getPropertyValue('--board-size') !== fitted) {
+      boards.style.setProperty('--board-size', fitted);
+    }
+  }
+
+  /**
+   * Fit the boards, then put the standing flames back on the cell centres they
+   * were fired at. Order matters: `fitBoards()` can change `--board-size`, and
+   * the trails are measured against the size it leaves behind.
+   */
+  private fitAndRealign(): void {
+    this.fitBoards();
+    this.relayoutTrails();
+  }
+
+  /**
    * Fly a rocket across the boards and leave its exhaust burning behind it.
    * State markers land with a matching delay; the trail stays put until the
    * same player fires again (each shooter owns exactly one trail).
@@ -212,10 +268,11 @@ export class Game {
     to: Coord;
     n: number;
   }): void {
-    if (!shot.from) return;
+    const from = shot.from;
     const layer = this.shotLayer();
+    if (!from || !layer) return;
     const mine = shot.shooter === this.session.myPlayer();
-    const geom = layer && this.measure(layer, shot.from, shot.to, mine);
+    const geom = this.measure(layer, from, shot.to, mine);
     if (!geom) return;
 
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -230,10 +287,11 @@ export class Game {
         id: shot.n,
         shooter: shot.shooter,
         mine,
-        from: shot.from!,
+        from,
         to: shot.to,
         transform: launch,
         width: still ? geom.len : 0,
+        growing: !still,
       },
     ]);
     if (still) return; // the standing trail tells the story; nothing flies
@@ -244,10 +302,23 @@ export class Game {
     // target transform can transition away from it.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        const impact = `translate(${geom.bx}px, ${geom.by}px) rotate(${geom.angle}deg)`;
-        this.rocket.update((r) => (r ? { ...r, transform: impact } : r));
+        // Re-measure rather than reuse the launch geometry: firing changes the
+        // status line and can refit the boards, moving every cell centre.
+        const now = this.measure(layer, from, shot.to, mine) ?? geom;
+        this.rocket.update((r) =>
+          r ? { ...r, transform: `translate(${now.bx}px, ${now.by}px) rotate(${now.angle}deg)` } : r,
+        );
         this.trails.update((trails) =>
-          trails.map((t) => (t.id === shot.n ? { ...t, width: geom.len } : t)),
+          trails.map((t) =>
+            t.id === shot.n
+              ? {
+                  ...t,
+                  transform: `translate(${now.ax}px, ${now.ay}px) rotate(${now.angle}deg)`,
+                  width: now.len,
+                  growing: false,
+                }
+              : t,
+          ),
         );
       }),
     );
@@ -256,23 +327,33 @@ export class Game {
     this.rocketTimer = setTimeout(() => this.rocket.set(null), 1000);
   }
 
-  /** Re-measure every standing trail after the boards change size. */
+  /**
+   * Re-anchor every standing trail to the cell centres it was fired between.
+   * Runs after each render, so it must write only when the geometry actually
+   * moved — an unconditional signal write here would schedule the next render
+   * and spin forever.
+   */
   private relayoutTrails(): void {
     const layer = this.shotLayer();
-    if (!layer || this.trails().length === 0) return;
-    this.trails.update((trails) =>
-      trails.flatMap((t) => {
-        const geom = this.measure(layer, t.from, t.to, t.mine);
-        if (!geom) return [];
-        return [
-          {
-            ...t,
-            transform: `translate(${geom.ax}px, ${geom.ay}px) rotate(${geom.angle}deg)`,
-            width: geom.len,
-          },
-        ];
-      }),
-    );
+    const current = this.trails();
+    if (!layer || current.length === 0) return;
+
+    let moved = false;
+    const next = current.flatMap((t) => {
+      const geom = this.measure(layer, t.from, t.to, t.mine);
+      if (!geom) {
+        moved = true; // the board it was drawn across is gone
+        return [];
+      }
+      const transform = `translate(${geom.ax}px, ${geom.ay}px) rotate(${geom.angle}deg)`;
+      // A trail still being painted on keeps its width: the rocket's own frame
+      // sets the final length when it lands.
+      const width = t.growing ? t.width : geom.len;
+      if (transform === t.transform && width === t.width) return [t];
+      moved = true;
+      return [{ ...t, transform, width }];
+    });
+    if (moved) this.trails.set(next);
   }
 
   private clearTrails(): void {
