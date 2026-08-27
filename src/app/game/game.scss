@@ -49,7 +49,9 @@ $expose-amber: #ffc457;
   // The chrome's zoom level. Every label, pill and gap in this view is sized
   // in `em`, so shrinking this shrinks the whole frame on short or narrow
   // screens and leaves more of the viewport for the boards.
-  --ui: clamp(0.6rem, min(1.85vh, 3.3vw), 0.94rem);
+  // dvh, not vh: in an in-app browser (Messenger, Instagram) `vh` measures the
+  // toolbar-hidden height, which would over-size the chrome on a short webview.
+  --ui: clamp(0.6rem, min(1.85dvh, 3.3vw), 0.94rem);
   font-size: var(--ui);
 }
 
