@@ -615,7 +615,9 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     }
   }
 
-  // Last known firing position, visible to the enemy.
+  // Last known firing position, visible to the enemy. No marker of its own —
+  // the standing flame starts on this square and says the same thing louder —
+  // just a quiet amber wash so the square still reads if the flame is missing.
   &.exposed {
     color: $expose-amber;
     background: radial-gradient(
@@ -626,11 +628,6 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     box-shadow:
       inset 0 0 0 1px rgba(255, 196, 87, 0.5),
       inset 0 0 10px rgba(255, 196, 87, 0.1);
-
-    .icon {
-      filter: drop-shadow(0 0 8px rgba(255, 196, 87, 0.55));
-      animation: reticle-pulse 1.8s ease-in-out infinite;
-    }
   }
 
   // Squares the exposed ship may escape to: arrows pointing the way out.
@@ -670,18 +667,6 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
   50% {
     transform: translateY(4%) rotate(1.2deg);
-  }
-}
-
-@keyframes reticle-pulse {
-  0%,
-  100% {
-    opacity: 0.75;
-    transform: scale(0.96);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.04);
   }
 }
 
