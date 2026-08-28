@@ -595,6 +595,9 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   // Direct hit — game over.
   &.ship-destroyed {
     color: #ff7a5c;
+    // The killing shot's flame ends on this very square, and its ember would
+    // wash the wreck out. The wreck is state; the flame is decoration.
+    z-index: 6; // above .shot-layer (5)
     background: radial-gradient(
       circle at 50% 45%,
       rgba(255, 92, 74, 0.38),
@@ -607,11 +610,33 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
 
     .icon {
       filter: drop-shadow(0 0 10px rgba(255, 92, 74, 0.8));
-      animation: hit-pop 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) 0.3s backwards;
+      // Settles rather than pops: the ship is going down, not exploding.
+      animation: wreck-settle 0.7s cubic-bezier(0.25, 0.9, 0.35, 1) 0.3s backwards;
     }
 
-    .hit-core {
-      fill: #ffe3d6;
+    // The part already swallowed reads dimmer than the stern still above water.
+    .wreck-bow {
+      opacity: 0.55;
+    }
+
+    .wreck-water {
+      opacity: 0.85;
+
+      &.deep {
+        opacity: 0.4;
+      }
+    }
+
+    .bubble {
+      opacity: 0.7;
+
+      & + .bubble {
+        opacity: 0.5;
+
+        & + .bubble {
+          opacity: 0.35;
+        }
+      }
     }
   }
 
@@ -698,12 +723,18 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
 }
 
-@keyframes hit-pop {
+// The wreck slides down and rights itself into the water.
+@keyframes wreck-settle {
   0% {
-    transform: scale(0.2);
+    opacity: 0;
+    transform: translateY(-26%) rotate(-12deg) scale(1.12);
+  }
+  55% {
+    opacity: 1;
   }
   100% {
-    transform: scale(1);
+    opacity: 1;
+    transform: none;
   }
 }
 
