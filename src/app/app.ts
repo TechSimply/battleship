@@ -2,6 +2,7 @@ import { Component, inject } from '@angular/core';
 import { Game } from './game/game';
 import { Lobby } from './lobby/lobby';
 import { SessionService } from './game/session.service';
+import { UpdateService } from './update.service';
 
 @Component({
   selector: 'app-root',
@@ -12,9 +13,10 @@ import { SessionService } from './game/session.service';
 })
 export class App {
   protected readonly session = inject(SessionService);
+  protected readonly update = inject(UpdateService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.0.12';
+  protected readonly version = 'v0.0.13';
 
   constructor() {
     // Invite links (…/?join=3) drop the opponent straight into the joining

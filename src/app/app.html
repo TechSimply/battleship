@@ -1,4 +1,25 @@
 <span class="app-version" aria-hidden="true">{{ version }}</span>
+
+<!--
+  A newer build is downloaded and waiting; tapping Update just reloads.
+  Held back until the player is out of a game: reloading drops the peer
+  connection and the round with it, and on the game screen the banner would
+  sit over the bottom row of the fleet board and eat taps meant for a cell.
+  The lobby has the room and nothing to lose.
+-->
+@if (update.ready() && !inGame()) {
+  <div id="update-banner" class="update-banner" role="status">
+    <span class="update-text">New version ready</span>
+    <button id="update-apply-btn" class="update-apply" (click)="update.apply()">Update</button>
+    <button
+      id="update-dismiss-btn"
+      class="update-dismiss"
+      (click)="update.dismiss()"
+      aria-label="Not now"
+    >×</button>
+  </div>
+}
+
 @if (inGame()) {
   <app-game />
 } @else {

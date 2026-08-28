@@ -1,10 +1,15 @@
 import { TestBed } from '@angular/core/testing';
+import { SwUpdate } from '@angular/service-worker';
 import { App } from './app';
+
+/** No worker under test, same as a dev build: UpdateService stands down. */
+const swDisabled = { isEnabled: false } as SwUpdate;
 
 describe('App', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [App],
+      providers: [{ provide: SwUpdate, useValue: swDisabled }],
     }).compileComponents();
   });
 

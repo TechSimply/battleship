@@ -67,6 +67,14 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   `possibleShipSquares()`, the same deduction the bot fires by, so the hint reveals
   nothing a player could not derive from the flame and the craters. Shown only once
   the enemy has fired (before that every unbombed square qualifies).
+- `src/app/update.service.ts` — offers newly deployed builds. The service worker serves
+  from cache and only swaps a new version in for a *fresh* client, and a phone suspends an
+  installed PWA rather than closing it, so without this the app can sit on an old build
+  indefinitely. Checks on launch, on every return to the foreground (throttled to once a
+  minute) and hourly; on `VERSION_READY` — downloaded, not merely detected — `app.html`
+  shows a "New version ready" pill. It is held back while `inGame()`, since reloading drops
+  the peer connection and the round with it. Dev builds expose `__battleshipUpdate()` to
+  raise the banner (the worker is disabled outside production).
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.
 

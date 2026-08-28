@@ -11,3 +11,72 @@
   user-select: none;
   z-index: 1000;
 }
+
+// Sits over the bottom of whichever screen is up. The game view is a fixed,
+// non-scrolling column, so this has to float rather than take up a row.
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 0.7rem);
+  transform: translateX(-50%);
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.45rem 0.5rem 0.45rem 0.85rem;
+  border: 1px solid rgba(79, 216, 235, 0.35);
+  border-radius: 999px;
+  background: rgba(13, 27, 44, 0.95);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  font-size: 0.85rem;
+  color: #dff3fb;
+  animation: update-in 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.update-text {
+  white-space: nowrap;
+}
+
+.update-apply {
+  padding: 0.3rem 0.85rem;
+  border: 0;
+  border-radius: 999px;
+  background: #4fd8eb;
+  color: #06222c;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.update-dismiss {
+  display: grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(223, 243, 251, 0.6);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+@keyframes update-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 60%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-banner {
+    animation: none;
+  }
+}
