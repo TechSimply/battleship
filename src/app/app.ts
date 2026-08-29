@@ -1,6 +1,7 @@
 import { Component, inject } from '@angular/core';
 import { Game } from './game/game';
 import { Lobby } from './lobby/lobby';
+import { GdAdsService } from './game/gd-ads.service';
 import { SessionService } from './game/session.service';
 import { UpdateService } from './update.service';
 
@@ -14,11 +15,15 @@ import { UpdateService } from './update.service';
 export class App {
   protected readonly session = inject(SessionService);
   protected readonly update = inject(UpdateService);
+  private readonly ads = inject(GdAdsService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.33';
+  protected readonly version = 'v0.34';
 
   constructor() {
+    // No-op unless we are inside GameDistribution's iframe.
+    this.ads.init();
+
     // Invite links (…/?join=3) drop the opponent straight into the joining
     // flow — no typing. Strip the param so a refresh doesn't re-join.
     const join = new URLSearchParams(location.search).get('join');

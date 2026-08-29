@@ -26,14 +26,24 @@ block CrazyGames later.
 - [x] RTDB rules hardened: no future-dated timestamps, `joined` sticky
 - [x] Play counters at `/stats` (`gamesStarted`, `botGames`) — cookieless, no
       consent banner needed. Verified writing.
+- [x] GameDistribution developer account (register as *developer*, not
+      publisher — the publisher funnel rejects you for lack of domain traffic)
+- [x] GD SDK integrated, gameId `80959252d6e640d18447298d25817b57`. Gated on
+      `gd_sdk_referrer_url` so ads/tracking load **only** inside GD's iframe —
+      our own domain stays consent-free. Ad shows on rematch only.
+- [x] `gd-wrapper/` — the self-host wrapper we upload; keeps push-to-deploy.
 
 ## ToDo
 
 - [ ] Put full legal name in LICENSE (currently just "Nukri")
 - [ ] Post to r/WebGames with a GIF — lead with "Play vs Computer"
 - [ ] itch.io page (free, instant)
-- [ ] Newgrounds — instant, revshare. Fastest path to first revenue.
-- [ ] Submit to GameDistribution (~1h: integrate their ad SDK, they host the build)
+- [ ] **Deploy v0.34 to Firebase, THEN upload `gd-wrapper/ship-duel-gd.zip`** —
+      the wrapper iframes the live site, so uploading first validates the old
+      build with no SDK in it.
+- [ ] Test via the revision link, watch one full ad, press Request Activation
+- [ ] GameDistribution review takes ~2 weeks
+- [ ] Newgrounds — instant, but pays out only at $100, so not a quick signal
 - [ ] Watch `/stats` for a week — do people replay?
 - [ ] Only if retention looks good: CrazyGames, then Poki
 

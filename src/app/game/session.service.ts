@@ -1,6 +1,7 @@
 import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
 import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
+import { GdAdsService } from './gd-ads.service';
 import { LobbyRegistryService, SessionRecord, SessionRole, isPartyPresent } from './lobby-registry.service';
 
 /**
@@ -84,6 +85,7 @@ export function parseGameId(input: string): number | null {
 export class SessionService {
   private readonly game = inject(GameService);
   private readonly registry = inject(LobbyRegistryService);
+  private readonly ads = inject(GdAdsService);
 
   readonly state = signal<SessionState>('lobby');
   /** Shareable id shown to players — the plain number, e.g. "1" (rule 7.2). */
@@ -294,6 +296,9 @@ export class SessionService {
   /** Rematch on both devices, keeping the connection. */
   playAgain(): void {
     if (this.state() !== 'playing') return;
+    // The round is over and the next has not begun: the one point in the game
+    // where an ad interrupts nothing. Outside the GD portal this is a no-op.
+    this.ads.showAd();
     this.game.reset();
     if (this.mode === 'p2p') this.sendAction({ kind: 'reset' });
   }
