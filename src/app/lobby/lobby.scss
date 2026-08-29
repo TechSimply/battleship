@@ -5,7 +5,13 @@ $panel: rgba(13, 27, 44, 0.85);
 $panel-border: rgba(96, 160, 210, 0.22);
 
 .lobby {
-  max-width: 420px;
+  // border-box, or `min-height: 100dvh` measures the *content* box and the 6rem
+  // of vertical padding is added on top — making the lobby 96px taller than the
+  // viewport and scrolling a screen that is meant to sit still. max-width grows
+  // by the same 2.5rem of horizontal padding so the card keeps its 420px of
+  // content (below 420px wide — every phone — max-width never binds anyway).
+  box-sizing: border-box;
+  max-width: 460px;
   min-height: 100dvh;
   margin: 0 auto;
   padding: 4rem 1.25rem 2rem;
