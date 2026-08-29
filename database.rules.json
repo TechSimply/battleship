@@ -5,10 +5,10 @@
         ".read": true,
         ".write": "data.child('terminated').val() != true",
         ".validate": "$gameNumber.matches(/^[0-9]{1,4}$/)",
-        "createdAt": { ".validate": "newData.isNumber()" },
-        "hostAt": { ".validate": "newData.isNumber() || newData.val() == null" },
-        "joinerAt": { ".validate": "newData.isNumber() || newData.val() == null" },
-        "joined": { ".validate": "newData.isBoolean()" },
+        "createdAt": { ".validate": "newData.isNumber() && newData.val() <= now" },
+        "hostAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
+        "joinerAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
+        "joined": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
         "terminated": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
         "$other": { ".validate": false }
       }
