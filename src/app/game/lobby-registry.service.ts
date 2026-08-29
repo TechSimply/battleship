@@ -7,6 +7,7 @@ import {
   onDisconnect,
   onValue,
   ref,
+  remove,
   runTransaction,
   serverTimestamp,
   update,
@@ -151,7 +152,9 @@ export class LobbyRegistryService {
   /**
    * Reserve Battle{n} as the host. Atomic: fails if a live session already
    * holds it (so two hosts can't claim the same number), succeeds if the slot
-   * is free, terminated, or an expired shell we can overwrite.
+   * is free or an expired/abandoned shell we can overwrite. (A leftover
+   * `terminated` tombstone from before links were deleted on leave would have
+   * its write rejected by the rules — the caller just tries another number.)
    */
   async claim(n: number): Promise<boolean> {
     try {
@@ -197,11 +200,16 @@ export class LobbyRegistryService {
     }
   }
 
-  /** Leave-btn: kill the link permanently (rule 9). */
+  /**
+   * Leave-btn: kill the link (rule 9). We delete the record rather than
+   * tombstoning it, so the link is dead for anyone still holding it (a rejoin
+   * finds nothing) while the number is freed for reuse — otherwise every ended
+   * game would permanently burn one of the ~9000 ids.
+   */
   async terminate(n: number): Promise<void> {
     this.stopPresence();
     try {
-      await update(this.sessionRef(n), { terminated: true });
+      await remove(this.sessionRef(n));
     } catch {
       // if we can't reach Firebase the link will simply age out via its TTL
     }

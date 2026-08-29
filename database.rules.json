@@ -1,17 +1,15 @@
 {
-  "//": "Realtime Database rules for battleship-p2p session bookkeeping (rule 9).",
-  "//readable": "Anyone with a link may read/create a session and heartbeat presence; a terminated link can never be written again, and 'terminated' can only ever be set true (never unset). Game moves never touch Firebase — they stay peer-to-peer. Paste this into Firebase Console -> Realtime Database -> Rules -> Publish.",
   "rules": {
     "sessions": {
       "$gameNumber": {
         ".read": true,
-        ".write": "!data.child('terminated').val()",
+        ".write": "data.child('terminated').val() != true",
         ".validate": "$gameNumber.matches(/^[0-9]{1,4}$/)",
         "createdAt": { ".validate": "newData.isNumber()" },
-        "hostAt": { ".validate": "newData.isNumber() || newData.val() === null" },
-        "joinerAt": { ".validate": "newData.isNumber() || newData.val() === null" },
+        "hostAt": { ".validate": "newData.isNumber() || newData.val() == null" },
+        "joinerAt": { ".validate": "newData.isNumber() || newData.val() == null" },
         "joined": { ".validate": "newData.isBoolean()" },
-        "terminated": { ".validate": "newData.isBoolean() && (!data.exists() || !data.val() || newData.val() === true)" },
+        "terminated": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
         "$other": { ".validate": false }
       }
     }

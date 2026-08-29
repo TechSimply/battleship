@@ -9,10 +9,8 @@
 export const firebaseConfig = {
   apiKey: 'AIzaSyC8lRTY1XatVL6r8YC73RFsk6qASj3_oxo',
   authDomain: 'battleship-p2p.firebaseapp.com',
-  // Filled in once the Realtime Database is created (Console → Realtime
-  // Database → Create Database). Region-specific: US default shown here; an EU
-  // db is https://battleship-p2p-default-rtdb.europe-west1.firebasedatabase.app
-  databaseURL: 'https://battleship-p2p-default-rtdb.firebaseio.com',
+  // Realtime Database in europe-west1 (Belgium).
+  databaseURL: 'https://battleship-p2p-default-rtdb.europe-west1.firebasedatabase.app',
   projectId: 'battleship-p2p',
   storageBucket: 'battleship-p2p.firebasestorage.app',
   messagingSenderId: '990061034645',
