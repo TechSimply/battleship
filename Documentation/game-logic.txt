@@ -27,3 +27,18 @@ and player2 chooses "Join the game" and inputs the game id (e.x. Battle1)
 
 8. Scoring system
 8.1. inside the game (battle1) we need to keep score one victory one point
+
+9. link invite 
+9.1.
+if player goes on teh link he doesn't need to enter gameid
+9.2.
+stale_nonoccupied_link_live_time=2minutes
+stale_occupied_link_live_time=5minutes
+The link invite should be a live no matter if the link generator closes the application of if nobody visitis this link
+for amount of stale_nonoccupied_link_live_time but if one player is on the link than it will be stale_occupied_link_live_time.
+Link generator is player1 the other player is player2
+and no matter if any of the player lieves the link  or both lieve the link, when they return they should represent respective 
+player number the one who created the link is player1 the other player is player2.
+If one of the players is on the link and other left stale_occupied_link_live_time applies
+if both leave stale_nonoccupied_link_live_time applies 
+if any of them pressed id="leave-btn" than the link terminates
