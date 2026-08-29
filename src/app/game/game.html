@@ -27,8 +27,8 @@
     <p
       id="game-status"
       class="status"
-      [class.warn]="session.state() === 'reconnecting'"
-    >{{ message() }}@if (session.state() === 'reconnecting') {<span class="dots"></span>}</p>
+      [class.warn]="session.state() === 'reconnecting' || opponentAway()"
+    >{{ message() }}@if (session.state() === 'reconnecting' || opponentAway()) {<span class="dots"></span>}</p>
 
     <div id="boards" class="boards">
       <div id="shot-layer" class="shot-layer" aria-hidden="true">

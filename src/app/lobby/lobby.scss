@@ -97,7 +97,7 @@ h1 {
   color: #ff8a76;
 }
 
-// "Battle" is fixed — the player only types the number they were given.
+// The player types just the number they were given.
 .id-entry {
   display: flex;
   align-items: stretch;
@@ -110,18 +110,6 @@ h1 {
     border-color: $cyan;
     box-shadow: 0 0 14px rgba(79, 216, 235, 0.25);
   }
-}
-
-.id-prefix {
-  display: flex;
-  align-items: center;
-  padding: 0.85rem 1rem;
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: $cyan;
-  background: rgba(79, 216, 235, 0.08);
-  border-right: 1px solid rgba(110, 170, 220, 0.25);
 }
 
 .id-input {

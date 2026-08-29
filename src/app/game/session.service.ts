@@ -1,6 +1,12 @@
 import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
 import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
+import {
+  LobbyRegistryService,
+  SessionRecord,
+  SessionRole,
+  isPartyPresent,
+} from './lobby-registry.service';
 
 /**
  * Rule 7: game sessions. The host claims a random free "Battle{n}" id on the
@@ -36,6 +42,8 @@ const MAX_CLAIM_ATTEMPTS = 50;
 const RECONNECT_GRACE_MS = 45_000;
 /** How often the joiner redials the host while resuming. */
 const REDIAL_INTERVAL_MS = 4_000;
+/** Remembers our number+role so a reload/return reclaims the same seat (rule 9). */
+const STORAGE_KEY = 'battleship:session';
 
 export type SessionState =
   | 'lobby' // choosing New Game / Join The Game (rule 7.1)
@@ -72,13 +80,20 @@ export function parseGameId(input: string): number | null {
 @Injectable({ providedIn: 'root' })
 export class SessionService {
   private readonly game = inject(GameService);
+  private readonly registry = inject(LobbyRegistryService);
 
   readonly state = signal<SessionState>('lobby');
-  /** Shareable id, e.g. "Battle1" (rule 7.2). */
+  /** Shareable id shown to players — the plain number, e.g. "1" (rule 7.2). */
   readonly gameId = signal<string | null>(null);
   /** 0 = host (fires first), 1 = joiner. */
   readonly myPlayer = signal<PlayerId>(0);
   readonly errorMsg = signal<string | null>(null);
+  /**
+   * Is the opponent currently on the link? true = present, false = they closed
+   * the app / left, null = unknown (not tracking, or we've not seen them yet).
+   * Driven by Firebase presence so a closed app is noticed in seconds.
+   */
+  readonly opponentPresent = signal<boolean | null>(null);
 
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
@@ -100,6 +115,15 @@ export class SessionService {
   /** 'p2p' = real opponent over PeerJS; 'bot' = local random computer. */
   private mode: 'p2p' | 'bot' = 'p2p';
   private botTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Opponent-presence watch (Firebase): a live subscription plus a slow re-check
+  // so a heartbeat that simply stops (no clean disconnect) is still caught. We
+  // latch `opponentSeen` so a not-yet-arrived opponent doesn't read as "left".
+  private presenceUnsub: (() => void) | null = null;
+  private presenceRecheck: ReturnType<typeof setInterval> | null = null;
+  private lastRecord: SessionRecord | null = null;
+  private opponentRole: SessionRole | null = null;
+  private opponentSeen = false;
 
   /** Held while a game is live so the OS keeps the tab awake (best-effort). */
   private wakeLock: WakeLockSentinelLike | null = null;
@@ -200,7 +224,7 @@ export class SessionService {
   newGame(): void {
     this.errorMsg.set(null);
     this.state.set('hosting');
-    this.claimGameId();
+    void this.claimGameId();
   }
 
   /**
@@ -226,7 +250,7 @@ export class SessionService {
     this.errorMsg.set(null);
     this.state.set('joining');
     this.gameNumber = n;
-    this.gameId.set(`Battle${n}`);
+    this.gameId.set(`${n}`);
     const deadline = Date.now() + (opts?.patient ? 45_000 : 12_000);
 
     // While we're still retrying, peer-unavailable just means the host isn't
@@ -248,7 +272,7 @@ export class SessionService {
     const retry = () => {
       if (this.state() !== 'joining') return;
       if (Date.now() >= deadline) {
-        this.fail(`Couldn’t find game Battle${n}. Check the id and try again.`);
+        this.fail(`Couldn’t find game ${n}. Check the id and try again.`);
       } else {
         setTimeout(() => this.dialHost(peer, n, deadline), 3_000);
       }
@@ -296,6 +320,12 @@ export class SessionService {
     } catch {
       // connection already gone — nothing to say goodbye to
     }
+    // Rule 9: pressing Leave terminates the link permanently. Do this before we
+    // null gameNumber below. (Bot/never-hosted sessions just stop presence.)
+    if (this.mode === 'p2p' && this.gameNumber !== null) void this.registry.terminate(this.gameNumber);
+    else this.registry.stopPresence();
+    this.stopWatchingOpponent();
+    this.clearSession();
     this.clearResumeTimers();
     this.stopReregisterLoop();
     this.mode = 'p2p';
@@ -315,17 +345,44 @@ export class SessionService {
     this.state.set('lobby');
   }
 
-  private claimGameId(attempt = 0): void {
-    if (attempt >= MAX_CLAIM_ATTEMPTS) {
+  /**
+   * Rule 9: reserve a random free Battle{n} in Firebase (the durable registry
+   * that outlives this tab), then host the PeerJS peer on exactly that number.
+   * Because the reservation persists, the link stays claimable for its TTL even
+   * if we close the app, and we can reclaim the same number on return. If
+   * Firebase is unreachable we degrade to a PeerJS-only claim so play still
+   * works — just without durable links.
+   */
+  private async claimGameId(): Promise<void> {
+    try {
+      for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt++) {
+        if (this.state() !== 'hosting') return; // user backed out mid-await
+        const n = MIN_GAME_ID + Math.floor(Math.random() * (MAX_GAME_ID - MIN_GAME_ID + 1));
+        if (await this.registry.claim(n)) {
+          if (this.state() === 'hosting') this.hostWithId(n);
+          return;
+        }
+      }
       this.fail('Couldn’t start a game right now — please try again.');
-      return;
+    } catch {
+      this.claimGameIdFallback(0); // Firebase down — host without durable links
     }
-    const n = MIN_GAME_ID + Math.floor(Math.random() * (MAX_GAME_ID - MIN_GAME_ID + 1));
+  }
+
+  /**
+   * Host on a specific reserved number. On the rare PeerJS `unavailable-id` the
+   * broker is still holding that id from a just-closed session — it frees within
+   * a minute, so we keep our reserved number and retry it rather than grabbing a
+   * different one (this is also the path a reload takes to reclaim its seat).
+   */
+  private hostWithId(n: number, attempt = 0): void {
+    if (this.state() !== 'hosting') return;
     const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
       if (err.type === 'unavailable-id') {
-        // That random id is already an active game — pick a different one.
         peer.destroy();
-        if (this.state() === 'hosting') this.claimGameId(attempt + 1);
+        if (this.state() !== 'hosting') return true;
+        if (attempt < 30) setTimeout(() => this.hostWithId(n, attempt + 1), 2_000);
+        else this.fail('Couldn’t start a game right now — please try again.');
         return true;
       }
       return false;
@@ -333,9 +390,39 @@ export class SessionService {
 
     peer.on('open', () => {
       this.gameNumber = n;
-      this.gameId.set(`Battle${n}`);
+      this.gameId.set(`${n}`);
+      // Keep the link alive and reclaimable while we wait for player 2.
+      this.registry.startPresence(n, 'host');
+      this.saveSession(n, 'host');
     });
 
+    this.wireHostConnections(peer);
+  }
+
+  /** PeerJS-only claim (Firebase unreachable): random id, no durable registry. */
+  private claimGameIdFallback(attempt: number): void {
+    if (attempt >= MAX_CLAIM_ATTEMPTS) {
+      this.fail('Couldn’t start a game right now — please try again.');
+      return;
+    }
+    const n = MIN_GAME_ID + Math.floor(Math.random() * (MAX_GAME_ID - MIN_GAME_ID + 1));
+    const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
+      if (err.type === 'unavailable-id') {
+        peer.destroy();
+        if (this.state() === 'hosting') this.claimGameIdFallback(attempt + 1);
+        return true;
+      }
+      return false;
+    });
+    peer.on('open', () => {
+      this.gameNumber = n;
+      this.gameId.set(`${n}`);
+    });
+    this.wireHostConnections(peer);
+  }
+
+  /** The host's `connection` handler — accepts player 2 and resume dials. */
+  private wireHostConnections(peer: Peer): void {
     // Registered once, outside 'open' — broker reconnects re-emit 'open' and
     // must not stack duplicate connection handlers.
     peer.on('connection', (conn) => {
@@ -378,6 +465,17 @@ export class SessionService {
       this.game.reset();
     }
     this.state.set('playing');
+
+    // Rule 9: remember our seat so a reload/return reclaims the same number and
+    // player role, keep our presence heartbeating, and (host side) mark the link
+    // occupied now that player 2 has arrived.
+    if (this.mode === 'p2p' && this.gameNumber !== null) {
+      const role: SessionRole = me === 0 ? 'host' : 'joiner';
+      this.registry.startPresence(this.gameNumber, role);
+      this.saveSession(this.gameNumber, role);
+      if (me === 0 && !resume) void this.registry.markJoined(this.gameNumber);
+      this.watchOpponent(this.gameNumber, role);
+    }
 
     conn.on('data', (data) => this.onMessage(data as WireMessage));
     conn.on('close', () => this.onLost(conn));
@@ -561,6 +659,8 @@ export class SessionService {
   /** Resume failed or the opponent left on purpose — the session is over. */
   private finalizeDisconnect(): void {
     this.clearResumeTimers();
+    this.registry.stopPresence(); // we're no longer on the link
+    this.stopWatchingOpponent();
     this.conn = null;
     this.state.set('disconnected');
   }
@@ -581,6 +681,8 @@ export class SessionService {
   private fail(msg: string): void {
     this.clearResumeTimers();
     this.stopReregisterLoop();
+    this.registry.stopPresence();
+    this.stopWatchingOpponent();
     this.errorMsg.set(msg);
     this.peer?.destroy();
     this.peer = null;
@@ -588,5 +690,110 @@ export class SessionService {
     this.gameNumber = null;
     this.gameId.set(null);
     this.state.set('error');
+  }
+
+  /**
+   * Rule 9: on launch, if this device owned a link that is still live, step
+   * straight back into it as the same player number — the host re-hosts its
+   * reserved id, a joiner redials it. Returns true if a resume was started, so
+   * the caller can skip the fresh-start lobby. A dead/terminated/expired link is
+   * forgotten. Reads nothing over the network when there's no saved seat, so it
+   * stays inert in tests.
+   */
+  async tryResume(): Promise<boolean> {
+    const saved = this.readSession();
+    if (!saved) return false;
+    let alive = false;
+    try {
+      alive = await this.registry.reclaim(saved.n, saved.role);
+    } catch {
+      alive = false;
+    }
+    if (!alive) {
+      this.clearSession();
+      return false;
+    }
+    this.errorMsg.set(null);
+    this.gameNumber = saved.n;
+    this.gameId.set(`${saved.n}`);
+    if (saved.role === 'host') {
+      this.state.set('hosting');
+      this.hostWithId(saved.n);
+    } else {
+      // Joiner returns by dialling the host's stable id, patiently (the host
+      // may still be reopening its own tab).
+      this.join(`${saved.n}`, { patient: true });
+    }
+    return true;
+  }
+
+  private saveSession(n: number, role: SessionRole): void {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ n, role }));
+    } catch {
+      // private-mode / storage-full — resume-on-return just won't be available
+    }
+  }
+
+  private clearSession(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // nothing we can do; a stale entry is harmless (reclaim re-validates it)
+    }
+  }
+
+  private readSession(): { n: number; role: SessionRole } | null {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const v = JSON.parse(raw) as { n?: unknown; role?: unknown };
+      if (typeof v.n === 'number' && (v.role === 'host' || v.role === 'joiner')) {
+        return { n: v.n, role: v.role };
+      }
+    } catch {
+      // malformed — treat as no saved session
+    }
+    return null;
+  }
+
+  /**
+   * Watch the opponent's Firebase presence so we can tell the player the moment
+   * the other side closes the app / leaves the link (rule 9), rather than
+   * waiting out the PeerJS reconnect grace. `myRole` is our own seat; we watch
+   * the other one.
+   */
+  private watchOpponent(n: number, myRole: SessionRole): void {
+    this.stopWatchingOpponent();
+    this.opponentRole = myRole === 'host' ? 'joiner' : 'host';
+    this.opponentSeen = false;
+    this.opponentPresent.set(null);
+    this.presenceUnsub = this.registry.observe(n, (rec) => {
+      this.lastRecord = rec;
+      this.evaluateOpponentPresence();
+    });
+    // A heartbeat that just stops (no clean disconnect event) is caught by
+    // re-evaluating the last record against the advancing clock.
+    this.presenceRecheck = setInterval(() => this.evaluateOpponentPresence(), 15_000);
+  }
+
+  private evaluateOpponentPresence(): void {
+    if (!this.opponentRole) return;
+    const present = isPartyPresent(this.lastRecord, this.opponentRole, this.registry.serverNow());
+    if (present) this.opponentSeen = true;
+    // Stay `null` until we've actually seen them once, so an opponent who hasn't
+    // finished connecting yet doesn't momentarily read as "left".
+    this.opponentPresent.set(this.opponentSeen ? present : null);
+  }
+
+  private stopWatchingOpponent(): void {
+    this.presenceUnsub?.();
+    this.presenceUnsub = null;
+    if (this.presenceRecheck) clearInterval(this.presenceRecheck);
+    this.presenceRecheck = null;
+    this.lastRecord = null;
+    this.opponentRole = null;
+    this.opponentSeen = false;
+    this.opponentPresent.set(null);
   }
 }

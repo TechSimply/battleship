@@ -16,7 +16,7 @@ export class App {
   protected readonly update = inject(UpdateService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.21';
+  protected readonly version = 'v0.23';
 
   constructor() {
     // Invite links (…/?join=3) drop the opponent straight into the joining
@@ -27,7 +27,12 @@ export class App {
       // Patient: the host may still be in their messaging app after sending
       // this link, with their game tab backgrounded — wait for them.
       this.session.join(join, { patient: true });
+      return;
     }
+    // No explicit invite: if we left a still-live game (reload, PWA resumed,
+    // browser reopened within the link's lifetime), step back into it as the
+    // same player number (rule 9).
+    void this.session.tryResume();
   }
 
   protected readonly inGame = () =>
