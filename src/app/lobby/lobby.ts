@@ -51,7 +51,7 @@ export class Lobby {
     if (!link) return;
     if (this.canShare) {
       try {
-        await navigator.share({ title: 'Battleship', url: link });
+        await navigator.share({ title: 'Sea Battle', url: link });
       } catch {
         // user dismissed the share sheet — nothing to do
       }
