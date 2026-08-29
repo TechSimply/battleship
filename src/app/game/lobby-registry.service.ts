@@ -4,6 +4,7 @@ import {
   Database,
   get,
   getDatabase,
+  increment,
   onValue,
   ref,
   remove,
@@ -206,6 +207,22 @@ export class LobbyRegistryService {
       await update(this.sessionRef(n), { joinerAt: serverTimestamp(), joined: true });
     } catch {
       // best-effort — a missed write just means the link ages a bit faster
+    }
+    this.bump('gamesStarted');
+  }
+
+  /**
+   * Bump an aggregate play counter under `/stats`. Deliberately just a number —
+   * no ids, no timestamps, nothing per-user — so it needs no cookie banner and
+   * carries no personal data. Session records are deleted on Leave, so without
+   * this there is no lasting trace that anyone ever played. Fire-and-forget:
+   * analytics must never fail a game.
+   */
+  bump(metric: 'gamesStarted' | 'botGames'): void {
+    try {
+      update(ref(this.db(), 'stats'), { [metric]: increment(1) }).catch(() => {});
+    } catch {
+      // Firebase unreachable — we simply don't count this one
     }
   }
 

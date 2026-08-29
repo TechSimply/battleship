@@ -12,6 +12,13 @@
         "terminated": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
         "$other": { ".validate": false }
       }
+    },
+    "stats": {
+      ".read": true,
+      "$metric": {
+        ".write": true,
+        ".validate": "$metric.matches(/^[a-zA-Z]{1,24}$/) && newData.isNumber() && (!data.exists() || newData.val() > data.val())"
+      }
     }
   }
 }

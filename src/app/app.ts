@@ -16,7 +16,7 @@ export class App {
   protected readonly update = inject(UpdateService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.32';
+  protected readonly version = 'v0.33';
 
   constructor() {
     // Invite links (…/?join=3) drop the opponent straight into the joining

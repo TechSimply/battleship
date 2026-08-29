@@ -186,6 +186,7 @@ export class SessionService {
     this.myPlayer.set(0);
     this.gameId.set('Computer');
     this.state.set('playing');
+    this.registry.bump('botGames');
   }
 
   /** One random-but-legal computer action for whatever the game waits on. */
