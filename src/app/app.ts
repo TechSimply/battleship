@@ -16,7 +16,7 @@ export class App {
   protected readonly update = inject(UpdateService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.27';
+  protected readonly version = 'v0.28';
 
   constructor() {
     // Invite links (…/?join=3) drop the opponent straight into the joining
@@ -24,9 +24,7 @@ export class App {
     const join = new URLSearchParams(location.search).get('join');
     if (join !== null) {
       history.replaceState(null, '', location.pathname);
-      // Patient: the host may still be in their messaging app after sending
-      // this link, with their game tab backgrounded — wait for them.
-      this.session.join(join, { patient: true });
+      this.session.join(join);
     }
   }
 

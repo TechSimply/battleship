@@ -35,6 +35,10 @@ const MIN_GAME_ID = 1000;
 const MAX_GAME_ID = 9999;
 /** Give up after this many random collisions (the id space is ~9000 wide). */
 const MAX_CLAIM_ATTEMPTS = 50;
+/** Safety net for a handshake that stalls; a live host answers in well under this. */
+const DIAL_TIMEOUT_MS = 5_000;
+/** Nobody is hosting that game any more — and it cannot be resumed. */
+const GAME_OVER_MSG = 'Game over — opponent left.';
 
 export type SessionState =
   | 'lobby' // choosing New Game / Join The Game (rule 7.1)
@@ -231,12 +235,12 @@ export class SessionService {
   }
 
   /**
-   * Rule 7.3: player 2 joins with the id player 1 shared. `patient` joins
-   * (invite links) keep retrying for a while: the host's phone often
-   * backgrounds its tab while sending the link, which drops Battle{n} off
-   * the broker until the host returns to the game and re-registers.
+   * Rule 7.3: player 2 joins with the id player 1 shared. Exactly one attempt —
+   * a host who is there answers in well under a second, and if they are not the
+   * broker says so just as fast. A dropped game cannot be resumed, so there is
+   * nothing to wait for: we say the game is over instead of retrying.
    */
-  join(idText: string, opts?: { patient?: boolean }): void {
+  join(idText: string): void {
     const n = parseGameId(idText);
     if (n === null) {
       this.errorMsg.set('That doesn’t look like a game number — enter just the number, e.g. "1"');
@@ -246,44 +250,36 @@ export class SessionService {
     this.state.set('joining');
     this.gameNumber = n;
     this.gameId.set(`${n}`);
-    const deadline = Date.now() + (opts?.patient ? 45_000 : 12_000);
 
-    // While we're still retrying, peer-unavailable just means the host isn't
-    // registered right now — not a fatal error.
-    const peer = this.createPeer(
-      new Peer(),
-      (err) =>
-        err.type === 'peer-unavailable' && this.state() === 'joining' && Date.now() < deadline,
-    );
+    // No such peer on the broker = nobody is hosting that game any more.
+    const peer = this.createPeer(new Peer(), (err) => {
+      if (err.type === 'peer-unavailable' && this.state() === 'joining') {
+        this.fail(GAME_OVER_MSG);
+        return true;
+      }
+      return false;
+    });
     peer.on('open', () => {
       if (this.state() !== 'joining') return; // broker reconnects re-emit 'open'
-      this.dialHost(peer, n, deadline);
+      this.dialHost(peer, n);
     });
   }
 
-  /** One join attempt; reschedules itself until `deadline`, then fails. */
-  private dialHost(peer: Peer, n: number, deadline: number): void {
+  /** The single join attempt: anything but a connection means there is no game. */
+  private dialHost(peer: Peer, n: number): void {
     if (this.state() !== 'joining') return;
-    const retry = () => {
-      if (this.state() !== 'joining') return;
-      if (Date.now() >= deadline) {
-        this.fail(`Couldn’t find game ${n}. Check the id and try again.`);
-      } else {
-        setTimeout(() => this.dialHost(peer, n, deadline), 3_000);
-      }
-    };
     const conn = peer.connect(PEER_PREFIX + n, { reliable: true });
     const giveUp = setTimeout(() => {
       conn.close();
-      retry();
-    }, 8_000);
+      this.fail(GAME_OVER_MSG);
+    }, DIAL_TIMEOUT_MS);
     conn.on('open', () => {
       clearTimeout(giveUp);
       this.attachConnection(conn, 1);
     });
     conn.on('error', () => {
       clearTimeout(giveUp);
-      retry();
+      this.fail(GAME_OVER_MSG);
     });
   }
 
