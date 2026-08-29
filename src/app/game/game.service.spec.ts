@@ -69,6 +69,24 @@ describe('GameService', () => {
     expect(game.winner()).toBe(0);
   });
 
+  it('round-trips a mid-game state through snapshot()/restore() (rule 9 resume)', () => {
+    placeBothShips({ x: 1, y: 1 }, { x: 2, y: 2 });
+    click(1, { x: 0, y: 0 }); // miss -> move phase, shooter exposed
+    const snap = game.snapshot();
+
+    // A fresh engine (as after a reload) restores to the identical state.
+    const revived = new GameService();
+    revived.restore(snap);
+    expect(revived.phase()).toBe(game.phase());
+    expect(revived.currentPlayer()).toBe(game.currentPlayer());
+    expect(revived.players()).toEqual(game.players());
+    expect(revived.scores()).toEqual(game.scores());
+
+    // Restore is a deep copy: mutating the source engine can't bleed into it.
+    click(0, { x: 2, y: 1 }); // move the original's ship
+    expect(revived.players()[0].ship).toEqual({ x: 1, y: 1 });
+  });
+
   it('marks the bombed square unusable and exposes the shooter on a miss (rules 5.2, 5.3)', () => {
     placeBothShips();
     click(1, { x: 1, y: 2 }); // miss

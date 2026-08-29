@@ -1,6 +1,6 @@
 import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
-import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, GameAction, GameService, GameSnapshot, PlayerId } from './game.service';
 import {
   LobbyRegistryService,
   SessionRecord,
@@ -56,8 +56,8 @@ export type SessionState =
 
 /** Everything that travels the wire: game actions plus session control. */
 type WireMessage =
-  | GameAction
-  | { kind: 'sync'; received: number } // resume: how many of your actions I have
+  | { kind: 'action'; seq: number; action: GameAction } // a game action, numbered per sender
+  | { kind: 'sync'; applied: number } // resume: highest seq of yours I've applied
   | { kind: 'bye' }; // deliberate leave — don't wait for a resume
 
 /** Minimal shape of the Screen Wake Lock API (not in every TS DOM lib). */
@@ -68,6 +68,16 @@ interface WakeLockSentinelLike {
 type WakeLockNavigator = Navigator & {
   wakeLock?: { request(type: 'screen'): Promise<WakeLockSentinelLike> };
 };
+
+/**
+ * The guard that makes reconnect replay safe: a numbered action is applied only
+ * when it is the very next one in sequence. A duplicate (a seq already applied)
+ * or an out-of-order gap is skipped, so a move can never land twice and drift
+ * the two devices' boards apart.
+ */
+export function actionInOrder(seq: number, appliedSeq: number): boolean {
+  return seq === appliedSeq + 1;
+}
 
 /** "Battle3", "battle 3" or plain "3" → 3; null when unparseable. */
 export function parseGameId(input: string): number | null {
@@ -100,11 +110,14 @@ export class SessionService {
   /** The n of Battle{n} — the host's stable peer id, used to redial. */
   private gameNumber: number | null = null;
 
-  // Resume bookkeeping: every action I originated this session, and how many
-  // of the opponent's I've applied. On resume each side reports its received
-  // count and the other resends the tail the counterpart never got.
+  // Resume / idempotency bookkeeping: every action I originated this session
+  // (its 1-based index in this log is its sequence number), and the highest
+  // sequence number of the opponent's actions I've applied. On resume each side
+  // reports how far it got and the other resends the tail. Numbering is what
+  // makes that replay safe: an action already applied is dropped on arrival, so
+  // a move can never land twice and drift the two boards out of sync.
   private sentLog: GameAction[] = [];
-  private receivedCount = 0;
+  private appliedSeq = 0;
 
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private redialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -296,21 +309,22 @@ export class SessionService {
   act(board: PlayerId, c: { x: number; y: number }): void {
     if (this.state() !== 'playing') return;
     const action = this.game.tryLocal(this.myPlayer(), board, c);
-    if (action && this.mode === 'p2p') {
-      this.sentLog.push(action);
-      this.conn?.send(action);
-    }
+    if (action && this.mode === 'p2p') this.sendAction(action);
   }
 
   /** Rematch on both devices, keeping the connection. */
   playAgain(): void {
     if (this.state() !== 'playing') return;
     this.game.reset();
-    if (this.mode === 'p2p') {
-      const action: GameAction = { kind: 'reset' };
-      this.sentLog.push(action);
-      this.conn?.send(action);
-    }
+    if (this.mode === 'p2p') this.sendAction({ kind: 'reset' });
+  }
+
+  /** Number a locally-originated action (1-based) and mirror it to the opponent. */
+  private sendAction(action: GameAction): void {
+    this.sentLog.push(action);
+    const seq = this.sentLog.length;
+    this.conn?.send({ kind: 'action', seq, action } satisfies WireMessage);
+    this.persist(); // keep the saved game current for a reload mid-turn
   }
 
   /** Tear everything down and return to the lobby (rule 7.1). */
@@ -337,7 +351,7 @@ export class SessionService {
     this.peer = null;
     this.gameNumber = null;
     this.sentLog = [];
-    this.receivedCount = 0;
+    this.appliedSeq = 0;
     this.game.reset();
     this.game.resetScores();
     this.gameId.set(null);
@@ -376,11 +390,14 @@ export class SessionService {
    * different one (this is also the path a reload takes to reclaim its seat).
    */
   private hostWithId(n: number, attempt = 0): void {
-    if (this.state() !== 'hosting') return;
+    // 'hosting' for a fresh New Game, 'reconnecting' when re-registering our id
+    // after a reload to resume an in-progress game (tryResume).
+    const active = () => this.state() === 'hosting' || this.state() === 'reconnecting';
+    if (!active()) return;
     const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
       if (err.type === 'unavailable-id') {
         peer.destroy();
-        if (this.state() !== 'hosting') return true;
+        if (!active()) return true;
         if (attempt < 30) setTimeout(() => this.hostWithId(n, attempt + 1), 2_000);
         else this.fail('Couldn’t start a game right now — please try again.');
         return true;
@@ -393,7 +410,7 @@ export class SessionService {
       this.gameId.set(`${n}`);
       // Keep the link alive and reclaimable while we wait for player 2.
       this.registry.startPresence(n, 'host');
-      this.saveSession(n, 'host');
+      this.persist();
     });
 
     this.wireHostConnections(peer);
@@ -428,7 +445,7 @@ export class SessionService {
     peer.on('connection', (conn) => {
       const resume = (conn.metadata as { resume?: boolean } | undefined)?.resume === true;
       conn.on('open', () => {
-        const gameUnderway = this.sentLog.length > 0 || this.receivedCount > 0;
+        const gameUnderway = this.sentLog.length > 0 || this.appliedSeq > 0;
         if (this.state() === 'hosting' && !this.conn) {
           this.attachConnection(conn, 0, false);
         } else if (resume && (this.state() === 'reconnecting' || this.state() === 'playing')) {
@@ -460,7 +477,7 @@ export class SessionService {
     this.myPlayer.set(me);
     if (!resume) {
       this.sentLog = [];
-      this.receivedCount = 0;
+      this.appliedSeq = 0;
       this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
       this.game.reset();
     }
@@ -472,7 +489,7 @@ export class SessionService {
     if (this.mode === 'p2p' && this.gameNumber !== null) {
       const role: SessionRole = me === 0 ? 'host' : 'joiner';
       this.registry.startPresence(this.gameNumber, role);
-      this.saveSession(this.gameNumber, role);
+      this.persist();
       if (me === 0 && !resume) void this.registry.markJoined(this.gameNumber);
       this.watchOpponent(this.gameNumber, role);
     }
@@ -481,22 +498,34 @@ export class SessionService {
     conn.on('close', () => this.onLost(conn));
     conn.on('error', () => this.onLost(conn));
 
-    // Resume handshake: report what we have; the opponent resends the rest.
-    if (resume) conn.send({ kind: 'sync', received: this.receivedCount } satisfies WireMessage);
+    // Resume handshake: tell the opponent how far we got; it resends the rest.
+    if (resume) conn.send({ kind: 'sync', applied: this.appliedSeq } satisfies WireMessage);
   }
 
   private onMessage(msg: WireMessage): void {
     switch (msg.kind) {
       case 'sync':
-        // Opponent came back; resend whatever it missed while we were apart.
-        for (const action of this.sentLog.slice(msg.received)) this.conn?.send(action);
+        // Opponent came back and told us the highest sequence number of ours it
+        // has applied; resend everything after that. Over-sending is harmless —
+        // anything it already has is dropped as a duplicate on arrival.
+        for (let i = msg.applied; i < this.sentLog.length; i++) {
+          this.conn?.send({ kind: 'action', seq: i + 1, action: this.sentLog[i] } satisfies WireMessage);
+        }
         break;
       case 'bye':
         this.finalizeDisconnect();
         break;
-      default:
-        this.receivedCount++;
-        this.game.apply(msg);
+      case 'action':
+        // Apply strictly in order and exactly once. A duplicate (a seq we've
+        // already applied) or an out-of-order gap is ignored — the resync
+        // resends the right tail in order — so a reconnect's replay can never
+        // double-apply a move and drift the two boards apart.
+        if (actionInOrder(msg.seq, this.appliedSeq)) {
+          this.appliedSeq = msg.seq;
+          this.game.apply(msg.action);
+          this.persist(); // save the opponent's move so a reload keeps it
+        }
+        break;
     }
   }
 
@@ -596,7 +625,7 @@ export class SessionService {
     // host in 'disconnected' while the joiner's real retry gets refused as a
     // full game. So the host just resumes waiting for player 2 (nothing was
     // played, so nothing is lost); the joiner, with nothing to resume, redials.
-    if (this.myPlayer() === 0 && this.sentLog.length === 0 && this.receivedCount === 0) {
+    if (this.myPlayer() === 0 && this.sentLog.length === 0 && this.appliedSeq === 0) {
       this.state.set('hosting');
       return;
     }
@@ -716,20 +745,47 @@ export class SessionService {
     this.errorMsg.set(null);
     this.gameNumber = saved.n;
     this.gameId.set(`${saved.n}`);
+    this.myPlayer.set(saved.role === 'host' ? 0 : 1);
+
+    // Restore the exact game we left (reload wipes memory) so we don't come back
+    // to a blank board that then desyncs the other device; the reconnect's
+    // seq-resync reconciles anything that happened while we were away.
+    if (saved.game) {
+      this.game.restore(saved.game);
+      this.sentLog = saved.sentLog ?? [];
+      this.appliedSeq = saved.appliedSeq ?? 0;
+    }
+
+    // Rejoin through the reconnect path (never the fresh-start path) so neither
+    // side resets: the host re-registers its id and waits for the other to
+    // resume-dial; a joiner resume-dials the host. Both land in attachConnection
+    // with resume=true.
+    this.state.set('reconnecting');
+    this.registry.startPresence(saved.n, saved.role);
+    this.watchOpponent(saved.n, saved.role);
     if (saved.role === 'host') {
-      this.state.set('hosting');
       this.hostWithId(saved.n);
     } else {
-      // Joiner returns by dialling the host's stable id, patiently (the host
-      // may still be reopening its own tab).
-      this.join(`${saved.n}`, { patient: true });
+      this.redial();
     }
     return true;
   }
 
-  private saveSession(n: number, role: SessionRole): void {
+  /** Persist the live game so a reload/return resumes the exact same board. */
+  private persist(): void {
+    if (this.mode !== 'p2p' || this.gameNumber === null) return;
+    const role: SessionRole = this.myPlayer() === 0 ? 'host' : 'joiner';
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ n, role }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          n: this.gameNumber,
+          role,
+          appliedSeq: this.appliedSeq,
+          sentLog: this.sentLog,
+          game: this.game.snapshot(),
+        }),
+      );
     } catch {
       // private-mode / storage-full — resume-on-return just won't be available
     }
@@ -743,13 +799,25 @@ export class SessionService {
     }
   }
 
-  private readSession(): { n: number; role: SessionRole } | null {
+  private readSession(): {
+    n: number;
+    role: SessionRole;
+    appliedSeq?: number;
+    sentLog?: GameAction[];
+    game?: GameSnapshot;
+  } | null {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return null;
-      const v = JSON.parse(raw) as { n?: unknown; role?: unknown };
+      const v = JSON.parse(raw) as {
+        n?: unknown;
+        role?: unknown;
+        appliedSeq?: number;
+        sentLog?: GameAction[];
+        game?: GameSnapshot;
+      };
       if (typeof v.n === 'number' && (v.role === 'host' || v.role === 'joiner')) {
-        return { n: v.n, role: v.role };
+        return { n: v.n, role: v.role, appliedSeq: v.appliedSeq, sentLog: v.sentLog, game: v.game };
       }
     } catch {
       // malformed — treat as no saved session
