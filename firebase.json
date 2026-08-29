@@ -1,0 +1,50 @@
+{
+  "hosting": {
+    "public": "dist/battleship/browser",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "//": "The update flow in update.service.ts only notices a new build if the browser re-fetches these. Never let them go stale in a CDN or browser cache.",
+        "source": "/@(index.html|ngsw.json|ngsw-worker.js|safety-worker.js|worker-basic.min.js|manifest.webmanifest)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "//": "Content-hashed bundles and static art: safe to pin forever. Patterns are deliberately narrow so they can never match the unhashed service-worker files above.",
+        "source": "/@(main|chunk|polyfills|styles)-*.@(js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "/assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      }
+    ]
+  },
+  "database": {
+    "rules": "database.rules.json"
+  }
+}
