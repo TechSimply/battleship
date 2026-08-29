@@ -42,6 +42,42 @@ describe('isSessionAlive (rule 9 link liveness)', () => {
   });
 });
 
+/**
+ * Why presence timestamps are left behind instead of nulled on disconnect.
+ * TTL is measured from the newest timestamp on the record, so if closing the
+ * app nulled a party's slot, a long game would fall back to `createdAt` and be
+ * judged dead the instant both players left — the reopen could never reclaim
+ * it. Keeping the last heartbeat makes the TTL run from when they were last
+ * active, which is what rule 9.2 actually describes.
+ */
+describe('a closed game stays reclaimable for its TTL', () => {
+  it('is still alive right after both players leave a long game', () => {
+    // Created 30 min ago, actively played until ~10s ago, then both closed.
+    const justLeft = rec({
+      createdAt: now - 30 * MIN,
+      hostAt: now - 10_000,
+      joinerAt: now - 10_000,
+      joined: true,
+    });
+    expect(isSessionAlive(justLeft, now)).toBe(true);
+
+    // The same record if disconnect had nulled the slots: nothing left to date
+    // the session by but createdAt, so a 30-minute-old game reads as long dead.
+    const nulled = rec({ createdAt: now - 30 * MIN, hostAt: null, joinerAt: null, joined: true });
+    expect(isSessionAlive(nulled, now)).toBe(false);
+  });
+
+  it('still expires once the TTL passes with nobody back', () => {
+    const abandoned = rec({
+      createdAt: now - 30 * MIN,
+      hostAt: now - 6 * MIN,
+      joinerAt: now - 6 * MIN,
+      joined: true,
+    });
+    expect(isSessionAlive(abandoned, now)).toBe(false);
+  });
+});
+
 describe('isPartyPresent (opponent-left signal)', () => {
   it('a fresh heartbeat reads as present', () => {
     expect(isPartyPresent(rec({ joinerAt: now }), 'joiner', now)).toBe(true);

@@ -4,7 +4,6 @@ import {
   Database,
   get,
   getDatabase,
-  onDisconnect,
   onValue,
   ref,
   remove,
@@ -33,7 +32,13 @@ import { firebaseConfig } from '../../environments/environment';
 
 export type SessionRole = 'host' | 'joiner';
 
-/** One `/sessions/{n}` record. `*At` are server-ms, nulled on disconnect. */
+/**
+ * One `/sessions/{n}` record. `*At` are server-ms of each party's last
+ * heartbeat — they are NOT nulled on disconnect, so they double as "last seen":
+ * a party is "present" only while its heartbeat is fresh, and the link's TTL is
+ * measured from the most recent heartbeat (not from creation), so a game stays
+ * reclaimable for the grace window after everyone actually left.
+ */
 export interface SessionRecord {
   createdAt: number;
   hostAt: number | null;
@@ -179,13 +184,17 @@ export class LobbyRegistryService {
    * on the existing record. Fails if the link has since died/terminated.
    */
   async reclaim(n: number, role: SessionRole): Promise<boolean> {
+    // Read-then-write rather than a transaction: on a fresh page load (exactly
+    // the reopen case) the client has no cached value, and a transaction that
+    // aborts on the initial null never reaches the server — so reclaim would
+    // always fail. get() forces a server read; there's no real contention here
+    // (only the returning owner reclaims its own seat).
+    const rec = await this.read(n);
+    if (!isSessionAlive(rec, this.now())) return false;
+    const field = role === 'host' ? 'hostAt' : 'joinerAt';
     try {
-      const field = role === 'host' ? 'hostAt' : 'joinerAt';
-      const res = await runTransaction(this.sessionRef(n), (cur: SessionRecord | null) => {
-        if (!isSessionAlive(cur, this.now())) return; // gone → abort
-        return { ...(cur as SessionRecord), [field]: serverTimestamp() };
-      });
-      return res.committed;
+      await update(this.sessionRef(n), { [field]: serverTimestamp() });
+      return true;
     } catch {
       return false;
     }
@@ -216,18 +225,16 @@ export class LobbyRegistryService {
   }
 
   /**
-   * Start heartbeating our presence into the record and arm a server-side
-   * clear for when we drop off (tab close, network loss) so the slot frees the
-   * instant we vanish rather than waiting out the TTL.
+   * Heartbeat our presence into the record. We deliberately do NOT null the slot
+   * on disconnect: leaving the last heartbeat behind is what lets the link's TTL
+   * be measured from when we were last active (so a reopen can reclaim it) — the
+   * opponent still sees us drop off once the heartbeat goes stale (PRESENCE_TTL).
    */
   startPresence(n: number, role: SessionRole): void {
     this.stopPresence();
     this.presenceN = n;
     this.presenceRole = role;
     const field = role === 'host' ? 'hostAt' : 'joinerAt';
-    onDisconnect(ref(this.db(), `sessions/${n}/${field}`))
-      .set(null)
-      .catch(() => {});
     const beat = () => {
       update(this.sessionRef(n), { [field]: serverTimestamp() }).catch(() => {});
     };
@@ -235,19 +242,12 @@ export class LobbyRegistryService {
     this.presenceTimer = setInterval(beat, HEARTBEAT_MS);
   }
 
-  /** Stop heartbeating and clear our presence now (a graceful leave). */
+  /** Stop heartbeating. The last timestamp stays as our "last seen" so the link
+   *  remains reclaimable within its TTL window (rule 9.2). */
   stopPresence(): void {
     if (this.presenceTimer) clearInterval(this.presenceTimer);
     this.presenceTimer = null;
-    const n = this.presenceN;
-    const role = this.presenceRole;
     this.presenceN = null;
     this.presenceRole = null;
-    if (n === null || !role) return;
-    const field = role === 'host' ? 'hostAt' : 'joinerAt';
-    onDisconnect(ref(this.db(), `sessions/${n}/${field}`))
-      .cancel()
-      .catch(() => {});
-    update(this.sessionRef(n), { [field]: null }).catch(() => {});
   }
 }
