@@ -65,7 +65,7 @@ export class Lobby {
   protected async copy(): Promise<void> {
     const id = this.session.gameId();
     if (!id) return;
-    await navigator.clipboard.writeText(id);
+    await navigator.clipboard.writeText(id.replace(/^Battle/, ''));
     this.flashCopied('id');
   }
 
