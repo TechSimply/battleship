@@ -36,15 +36,31 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   squares, scores) stays in sync with no extra messages. `reset()` = round reset (keeps score);
   `resetScores()` = new session.
 - `src/app/game/session.service.ts` — owns the PeerJS lifecycle. Host claims peer id
-  `techsimply-battleship-battle-{n}` (shown as `Battle{n}`), joiner connects by id; game actions
-  flow over the data channel. Handles join errors and opponent-disconnect. `parseGameId()`
-  accepts `Battle3` / `battle 3` / `3`. A dropped connection enters a 45s `reconnecting` state
-  instead of ending the game: the joiner redials the host's stable id (`metadata.resume`), the
-  host swaps the connection in, and a `sync` handshake (each side reports how many opponent
-  actions it applied; the other resends its sent-log tail) restores identical state. Broker-socket
-  loss triggers a re-register retry loop so `Battle{n}` stays claimed. Leaving sends `bye` so the
-  opponent shows "disconnected" immediately rather than waiting out the grace window. Dev builds
-  expose `__battleshipDrop()` to sever the channel in tests.
+  `techsimply-battleship-battle-{n}` (shown as the plain number), joiner connects by id; game
+  actions flow over the data channel, each numbered per sender and applied strictly in order
+  exactly once (`actionInOrder`). Handles join errors and opponent-disconnect. `parseGameId()`
+  accepts `Battle3` / `battle 3` / `3`.
+  **There is deliberately no reconnect/resume.** Losing the data channel — closing the tab,
+  quitting the PWA, a network drop — ends the game: both sides go to `disconnected` and must
+  start a new one. An earlier version tried to resume by replaying missed actions, but the
+  game state lives only in the two browsers, so any gap desynced the boards (players seeing
+  different bombed squares, or a win only one side saw). Doing this properly means persisting
+  the authoritative game server-side, not replaying deltas — see "Possible next steps".
+  The one exception: if the host's connection dies before any action crossed it, that is the
+  invite-link ghost dial, so the host just goes back to `hosting` (nothing was played).
+  Broker-socket loss triggers a re-register retry loop so the id stays claimed while waiting
+  for player 2. Leaving sends `bye`. Dev builds expose `__battleshipDrop()` to sever the
+  channel in tests.
+- `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database bookkeeping for
+  rule 9 (project `battleship-p2p`, europe-west1; rules in `database.rules.json`). Holds one
+  `/sessions/{n}` record per game: `claim()` reserves a number atomically, presence heartbeats
+  keep it alive, `isSessionAlive()` applies the rule 9.2 TTLs (2 min never-paired / 5 min once
+  paired, measured from the newest heartbeat), and `terminate()` deletes the record on Leave so
+  the number is reusable. `isPartyPresent()` drives `session.opponentPresent`, which tells a
+  player their opponent closed the app. Gameplay never goes through Firebase. If Firebase is
+  unreachable the app degrades to a PeerJS-only claim. Note `reclaim()` must do an explicit
+  `get()` then `update()` — a `runTransaction` sees `null` on a cold page load and aborts
+  without ever reaching the server.
 - `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first). The host can copy an
   invite link (`…/?join={n}`, built from `document.baseURI`) that `app.ts` auto-joins on load,
   or share just the number for manual entry (digits-only field with a fixed "Battle" prefix).
@@ -110,6 +126,12 @@ for networked/multi-device changes.
 - Mobile-first: design every UI change for phones first.
 
 ## Possible next steps
+
+**Server-authoritative game state.** The big one, and the prerequisite for
+bringing back reconnect/resume: keep the board in Firebase (alongside the
+session record) instead of only in the two browsers, so a player who closes the
+app can rejoin the game exactly as it stood. Replaying deltas over P2P was tried
+and removed — it desynced the boards whenever the replay had a gap.
 
 TURN fallback for strict NATs (the free PeerJS cloud has no relay), random
 first player, real-world two-phone connection test, further PWA polish.

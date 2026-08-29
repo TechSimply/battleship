@@ -21,14 +21,16 @@
   </header>
 
   @if (session.state() === 'disconnected') {
-    <p id="disconnected-status" class="status error">Opponent disconnected</p>
+    <p id="disconnected-status" class="status error">
+      Opponent left — this game is over. Start a new one to play again.
+    </p>
     <button id="back-to-menu-btn" class="reset" (click)="session.leave()">Back to menu</button>
   } @else {
     <p
       id="game-status"
       class="status"
-      [class.warn]="session.state() === 'reconnecting' || opponentAway()"
-    >{{ message() }}@if (session.state() === 'reconnecting' || opponentAway()) {<span class="dots"></span>}</p>
+      [class.warn]="opponentAway()"
+    >{{ message() }}</p>
 
     <div id="boards" class="boards">
       <div id="shot-layer" class="shot-layer" aria-hidden="true">

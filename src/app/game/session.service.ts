@@ -1,12 +1,7 @@
 import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
-import { BOARD_H, BOARD_W, GameAction, GameService, GameSnapshot, PlayerId } from './game.service';
-import {
-  LobbyRegistryService,
-  SessionRecord,
-  SessionRole,
-  isPartyPresent,
-} from './lobby-registry.service';
+import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
+import { LobbyRegistryService, SessionRecord, SessionRole, isPartyPresent } from './lobby-registry.service';
 
 /**
  * Rule 7: game sessions. The host claims a random free "Battle{n}" id on the
@@ -15,17 +10,19 @@ import {
  * to it. After that, every game action is applied
  * locally and mirrored to the opponent over the WebRTC data channel.
  *
- * A dropped connection (network blip, phone backgrounded for a moment) does
- * NOT end the game: both sides enter 'reconnecting' for a grace period — the
- * joiner redials the host's stable Battle{n} id, the host re-accepts — and a
- * sync handshake replays whatever actions each side missed, so the
- * deterministic engines land back in the same state. Only a deliberate Leave
- * (which sends 'bye') or an expired grace period ends the session.
+ * A game lives only as long as both devices stay connected. Losing the data
+ * channel — closing the tab, quitting the PWA, a network drop — ends the
+ * session: both sides go to 'disconnected' and start a new game. There is
+ * deliberately no resume. The state lives only in the two browsers, so a
+ * reconnect had to rebuild it by replaying moves, and any gap there desynced
+ * the boards (players seeing different bombed squares, or a win only one side
+ * saw) — far worse than simply ending the round. Restoring resume properly
+ * means persisting the authoritative game server-side, not replaying deltas.
  *
  * Because a phone freezes a backgrounded tab's broker socket, returning to the
  * foreground triggers an immediate broker re-register (so Battle{n} is
- * reclaimed at once), and a screen wake lock is held for the duration of a live
- * game to make the OS less eager to suspend the host while it waits.
+ * reclaimed at once while waiting for player 2), and a screen wake lock is held
+ * for the duration of a live game to make the OS less eager to suspend the tab.
  */
 
 /** Peer-id namespace so we never collide with unrelated PeerJS apps. */
@@ -38,27 +35,19 @@ const MIN_GAME_ID = 1000;
 const MAX_GAME_ID = 9999;
 /** Give up after this many random collisions (the id space is ~9000 wide). */
 const MAX_CLAIM_ATTEMPTS = 50;
-/** How long a dropped game keeps trying to resume before giving up. */
-const RECONNECT_GRACE_MS = 45_000;
-/** How often the joiner redials the host while resuming. */
-const REDIAL_INTERVAL_MS = 4_000;
-/** Remembers our number+role so a reload/return reclaims the same seat (rule 9). */
-const STORAGE_KEY = 'battleship:session';
 
 export type SessionState =
   | 'lobby' // choosing New Game / Join The Game (rule 7.1)
   | 'hosting' // game id claimed, waiting for player 2
   | 'joining' // connecting to a host
   | 'playing' // both devices connected
-  | 'reconnecting' // connection dropped; trying to resume the same game
-  | 'disconnected' // opponent left / connection lost for good
+  | 'disconnected' // opponent left / connection lost — the game is over
   | 'error';
 
 /** Everything that travels the wire: game actions plus session control. */
 type WireMessage =
   | { kind: 'action'; seq: number; action: GameAction } // a game action, numbered per sender
-  | { kind: 'sync'; applied: number } // resume: highest seq of yours I've applied
-  | { kind: 'bye' }; // deliberate leave — don't wait for a resume
+  | { kind: 'bye' }; // deliberate leave
 
 /** Minimal shape of the Screen Wake Lock API (not in every TS DOM lib). */
 interface WakeLockSentinelLike {
@@ -70,9 +59,9 @@ type WakeLockNavigator = Navigator & {
 };
 
 /**
- * The guard that makes reconnect replay safe: a numbered action is applied only
- * when it is the very next one in sequence. A duplicate (a seq already applied)
- * or an out-of-order gap is skipped, so a move can never land twice and drift
+ * Actions are numbered per sender and applied only in strict order. The channel
+ * is reliable and ordered, so this should always hold — it is a cheap guard that
+ * a stray or repeated delivery can never apply a move twice and silently drift
  * the two devices' boards apart.
  */
 export function actionInOrder(seq: number, appliedSeq: number): boolean {
@@ -107,23 +96,16 @@ export class SessionService {
 
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
-  /** The n of Battle{n} — the host's stable peer id, used to redial. */
+  /** The n of Battle{n} — the host's peer id. */
   private gameNumber: number | null = null;
 
-  // Resume / idempotency bookkeeping: every action I originated this session
-  // (its 1-based index in this log is its sequence number), and the highest
-  // sequence number of the opponent's actions I've applied. On resume each side
-  // reports how far it got and the other resends the tail. Numbering is what
-  // makes that replay safe: an action already applied is dropped on arrival, so
-  // a move can never land twice and drift the two boards out of sync.
-  private sentLog: GameAction[] = [];
+  // Ordering bookkeeping: how many actions I've originated (the next one's
+  // sequence number) and the highest sequence number of the opponent's I've
+  // applied, so an action can only ever be applied once, in order.
+  private sentSeq = 0;
   private appliedSeq = 0;
 
-  private graceTimer: ReturnType<typeof setTimeout> | null = null;
-  private redialTimer: ReturnType<typeof setTimeout> | null = null;
   private reregisterTimer: ReturnType<typeof setTimeout> | null = null;
-  /** One dial attempt at a time — parallel dials would race each other. */
-  private dialInFlight = false;
 
   /** 'p2p' = real opponent over PeerJS; 'bot' = local random computer. */
   private mode: 'p2p' | 'bot' = 'p2p';
@@ -162,7 +144,7 @@ export class SessionService {
     // fall back to the lobby / a dead session.
     effect(() => {
       const s = this.state();
-      if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing' || s === 'reconnecting')) {
+      if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing')) {
         void this.acquireWakeLock();
       } else {
         this.releaseWakeLock();
@@ -297,7 +279,7 @@ export class SessionService {
     }, 8_000);
     conn.on('open', () => {
       clearTimeout(giveUp);
-      this.attachConnection(conn, 1, false);
+      this.attachConnection(conn, 1);
     });
     conn.on('error', () => {
       clearTimeout(giveUp);
@@ -321,10 +303,8 @@ export class SessionService {
 
   /** Number a locally-originated action (1-based) and mirror it to the opponent. */
   private sendAction(action: GameAction): void {
-    this.sentLog.push(action);
-    const seq = this.sentLog.length;
+    const seq = ++this.sentSeq;
     this.conn?.send({ kind: 'action', seq, action } satisfies WireMessage);
-    this.persist(); // keep the saved game current for a reload mid-turn
   }
 
   /** Tear everything down and return to the lobby (rule 7.1). */
@@ -339,8 +319,6 @@ export class SessionService {
     if (this.mode === 'p2p' && this.gameNumber !== null) void this.registry.terminate(this.gameNumber);
     else this.registry.stopPresence();
     this.stopWatchingOpponent();
-    this.clearSession();
-    this.clearResumeTimers();
     this.stopReregisterLoop();
     this.mode = 'p2p';
     if (this.botTimer) clearTimeout(this.botTimer);
@@ -350,7 +328,7 @@ export class SessionService {
     this.conn = null;
     this.peer = null;
     this.gameNumber = null;
-    this.sentLog = [];
+    this.sentSeq = 0;
     this.appliedSeq = 0;
     this.game.reset();
     this.game.resetScores();
@@ -387,17 +365,14 @@ export class SessionService {
    * Host on a specific reserved number. On the rare PeerJS `unavailable-id` the
    * broker is still holding that id from a just-closed session — it frees within
    * a minute, so we keep our reserved number and retry it rather than grabbing a
-   * different one (this is also the path a reload takes to reclaim its seat).
+   * different one.
    */
   private hostWithId(n: number, attempt = 0): void {
-    // 'hosting' for a fresh New Game, 'reconnecting' when re-registering our id
-    // after a reload to resume an in-progress game (tryResume).
-    const active = () => this.state() === 'hosting' || this.state() === 'reconnecting';
-    if (!active()) return;
+    if (this.state() !== 'hosting') return;
     const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
       if (err.type === 'unavailable-id') {
         peer.destroy();
-        if (!active()) return true;
+        if (this.state() !== 'hosting') return true;
         if (attempt < 30) setTimeout(() => this.hostWithId(n, attempt + 1), 2_000);
         else this.fail('Couldn’t start a game right now — please try again.');
         return true;
@@ -408,9 +383,8 @@ export class SessionService {
     peer.on('open', () => {
       this.gameNumber = n;
       this.gameId.set(`${n}`);
-      // Keep the link alive and reclaimable while we wait for player 2.
+      // Hold the reservation while we wait for player 2.
       this.registry.startPresence(n, 'host');
-      this.persist();
     });
 
     this.wireHostConnections(peer);
@@ -438,92 +412,57 @@ export class SessionService {
     this.wireHostConnections(peer);
   }
 
-  /** The host's `connection` handler — accepts player 2 and resume dials. */
+  /** The host's `connection` handler — accepts player 2, refuses the rest. */
   private wireHostConnections(peer: Peer): void {
     // Registered once, outside 'open' — broker reconnects re-emit 'open' and
     // must not stack duplicate connection handlers.
     peer.on('connection', (conn) => {
-      const resume = (conn.metadata as { resume?: boolean } | undefined)?.resume === true;
       conn.on('open', () => {
-        const gameUnderway = this.sentLog.length > 0 || this.appliedSeq > 0;
         if (this.state() === 'hosting' && !this.conn) {
-          this.attachConnection(conn, 0, false);
-        } else if (resume && (this.state() === 'reconnecting' || this.state() === 'playing')) {
-          // Our opponent redialling after a drop — maybe before we even
-          // noticed it; swap the connection in and resync.
-          this.attachConnection(conn, 0, true);
-        } else if (
-          !gameUnderway &&
-          (this.state() === 'playing' || this.state() === 'reconnecting')
-        ) {
-          // No game action has crossed the wire yet, so the connection we're
-          // holding is a stale/ghost dial (see onLost): an invite-link join
-          // whose first attempt the joiner already abandoned, delivered to us
-          // late by the broker after we re-registered. Let this fresh join
-          // replace it rather than refusing it as a full game.
-          this.attachConnection(conn, 0, false);
+          this.attachConnection(conn, 0);
         } else {
-          conn.close(); // game is full
+          conn.close(); // game is full, or already over
         }
       });
     });
   }
 
-  private attachConnection(conn: DataConnection, me: PlayerId, resume: boolean): void {
-    this.clearResumeTimers();
+  private attachConnection(conn: DataConnection, me: PlayerId): void {
     const old = this.conn;
     this.conn = conn; // before old.close() so its events read as superseded
     old?.close();
     this.myPlayer.set(me);
-    if (!resume) {
-      this.sentLog = [];
-      this.appliedSeq = 0;
-      this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
-      this.game.reset();
-    }
+    this.sentSeq = 0;
+    this.appliedSeq = 0;
+    this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
+    this.game.reset();
     this.state.set('playing');
 
-    // Rule 9: remember our seat so a reload/return reclaims the same number and
-    // player role, keep our presence heartbeating, and (host side) mark the link
-    // occupied now that player 2 has arrived.
+    // Rule 9: hold our presence on the link, and (host side) mark it occupied
+    // now that player 2 has arrived.
     if (this.mode === 'p2p' && this.gameNumber !== null) {
       const role: SessionRole = me === 0 ? 'host' : 'joiner';
       this.registry.startPresence(this.gameNumber, role);
-      this.persist();
-      if (me === 0 && !resume) void this.registry.markJoined(this.gameNumber);
+      if (me === 0) void this.registry.markJoined(this.gameNumber);
       this.watchOpponent(this.gameNumber, role);
     }
 
     conn.on('data', (data) => this.onMessage(data as WireMessage));
     conn.on('close', () => this.onLost(conn));
     conn.on('error', () => this.onLost(conn));
-
-    // Resume handshake: tell the opponent how far we got; it resends the rest.
-    if (resume) conn.send({ kind: 'sync', applied: this.appliedSeq } satisfies WireMessage);
   }
 
   private onMessage(msg: WireMessage): void {
     switch (msg.kind) {
-      case 'sync':
-        // Opponent came back and told us the highest sequence number of ours it
-        // has applied; resend everything after that. Over-sending is harmless —
-        // anything it already has is dropped as a duplicate on arrival.
-        for (let i = msg.applied; i < this.sentLog.length; i++) {
-          this.conn?.send({ kind: 'action', seq: i + 1, action: this.sentLog[i] } satisfies WireMessage);
-        }
-        break;
       case 'bye':
         this.finalizeDisconnect();
         break;
       case 'action':
-        // Apply strictly in order and exactly once. A duplicate (a seq we've
-        // already applied) or an out-of-order gap is ignored — the resync
-        // resends the right tail in order — so a reconnect's replay can never
-        // double-apply a move and drift the two boards apart.
+        // Apply strictly in order and exactly once, so a stray or repeated
+        // delivery can never double-apply a move and drift the boards apart.
         if (actionInOrder(msg.seq, this.appliedSeq)) {
           this.appliedSeq = msg.seq;
           this.game.apply(msg.action);
-          this.persist(); // save the opponent's move so a reload keeps it
         }
         break;
     }
@@ -535,7 +474,6 @@ export class SessionService {
     this.peer = peer;
     peer.on('error', (err: Error & { type: string }) => {
       if (handled?.(err)) return;
-      if (this.state() === 'reconnecting') return; // the redial loop is in charge
       if (err.type === 'peer-unavailable') {
         this.fail(`Couldn’t find that game. Check the id and try again.`);
       } else if (this.state() === 'hosting' || this.state() === 'joining') {
@@ -582,7 +520,7 @@ export class SessionService {
       this.keepRegistered(peer);
     }
     const s = this.state();
-    if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing' || s === 'reconnecting')) {
+    if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing')) {
       void this.acquireWakeLock();
     }
   }
@@ -611,95 +549,33 @@ export class SessionService {
   }
 
   /** The data channel died while playing — start the resume window. */
+  /** The data channel died — the game is over (no resume; see the file header). */
   private onLost(conn: DataConnection): void {
     if (conn !== this.conn) return; // an old connection we already replaced
     if (this.state() !== 'playing') return;
     this.conn = null;
 
-    // If not a single game action ever crossed this connection, it never
-    // really carried a game. That is exactly the invite-link ghost: the
-    // joiner's first dial times out while the host's tab is still backgrounded
-    // and is abandoned, but the broker can hand that stale offer to the host
-    // once it re-registers, opening a one-sided connection the joiner has
-    // already moved on from. Burning the reconnect grace on it would strand the
-    // host in 'disconnected' while the joiner's real retry gets refused as a
-    // full game. So the host just resumes waiting for player 2 (nothing was
-    // played, so nothing is lost); the joiner, with nothing to resume, redials.
-    if (this.myPlayer() === 0 && this.sentLog.length === 0 && this.appliedSeq === 0) {
+    // If not a single game action ever crossed this connection, it never really
+    // carried a game. That is the invite-link ghost: the joiner's first dial
+    // times out while the host tab is backgrounded and is abandoned, but the
+    // broker can still hand that stale offer to the host, opening a one-sided
+    // connection the joiner has already moved on from. Ending the session on it
+    // would refuse the joiner's real retry as a full game, so the host simply
+    // goes back to waiting for player 2 — nothing was played, nothing is lost.
+    if (this.myPlayer() === 0 && this.sentSeq === 0 && this.appliedSeq === 0) {
       this.state.set('hosting');
       return;
     }
 
-    this.state.set('reconnecting');
-    this.graceTimer = setTimeout(() => this.finalizeDisconnect(), RECONNECT_GRACE_MS);
-    // The host keeps listening on its stable id; the joiner does the dialling.
-    if (this.myPlayer() === 1) this.redial();
+    this.finalizeDisconnect();
   }
 
-  /** Joiner side: dial the host's Battle{n} id until it answers or grace ends. */
-  private redial(): void {
-    if (this.state() !== 'reconnecting' || this.gameNumber === null) return;
-    if (this.dialInFlight) return;
-
-    const attempt = (peer: Peer) => {
-      if (this.state() !== 'reconnecting' || this.dialInFlight) return;
-      this.dialInFlight = true;
-      const conn = peer.connect(PEER_PREFIX + this.gameNumber, {
-        reliable: true,
-        metadata: { resume: true },
-      });
-      const giveUp = setTimeout(() => {
-        this.dialInFlight = false;
-        conn.close();
-        this.scheduleRedial();
-      }, REDIAL_INTERVAL_MS);
-      conn.on('open', () => {
-        clearTimeout(giveUp);
-        this.dialInFlight = false;
-        if (this.state() === 'reconnecting') this.attachConnection(conn, 1, true);
-        else conn.close();
-      });
-      conn.on('error', () => {
-        clearTimeout(giveUp);
-        this.dialInFlight = false;
-        this.scheduleRedial();
-      });
-    };
-
-    const peer = this.peer;
-    if (peer && !peer.destroyed && peer.open && !peer.disconnected) {
-      attempt(peer);
-    } else {
-      // Our signalling peer died with the network — start a fresh one. It may
-      // never open (broker still unreachable), so also keep the retry loop
-      // ticking; each tick lands here again until one fresh peer gets through.
-      const fresh = this.createPeer(new Peer());
-      fresh.on('open', () => attempt(fresh));
-      this.scheduleRedial();
-    }
-  }
-
-  private scheduleRedial(): void {
-    if (this.state() !== 'reconnecting') return;
-    if (this.redialTimer) clearTimeout(this.redialTimer);
-    this.redialTimer = setTimeout(() => this.redial(), REDIAL_INTERVAL_MS);
-  }
-
-  /** Resume failed or the opponent left on purpose — the session is over. */
+  /** The opponent left or the connection died — the session is over. */
   private finalizeDisconnect(): void {
-    this.clearResumeTimers();
-    this.registry.stopPresence(); // we're no longer on the link
+    this.registry.stopPresence(); // we are no longer on the link
     this.stopWatchingOpponent();
     this.conn = null;
     this.state.set('disconnected');
-  }
-
-  private clearResumeTimers(): void {
-    if (this.graceTimer) clearTimeout(this.graceTimer);
-    if (this.redialTimer) clearTimeout(this.redialTimer);
-    this.graceTimer = null;
-    this.redialTimer = null;
-    this.dialInFlight = false;
   }
 
   private stopReregisterLoop(): void {
@@ -708,7 +584,6 @@ export class SessionService {
   }
 
   private fail(msg: string): void {
-    this.clearResumeTimers();
     this.stopReregisterLoop();
     this.registry.stopPresence();
     this.stopWatchingOpponent();
@@ -719,110 +594,6 @@ export class SessionService {
     this.gameNumber = null;
     this.gameId.set(null);
     this.state.set('error');
-  }
-
-  /**
-   * Rule 9: on launch, if this device owned a link that is still live, step
-   * straight back into it as the same player number — the host re-hosts its
-   * reserved id, a joiner redials it. Returns true if a resume was started, so
-   * the caller can skip the fresh-start lobby. A dead/terminated/expired link is
-   * forgotten. Reads nothing over the network when there's no saved seat, so it
-   * stays inert in tests.
-   */
-  async tryResume(): Promise<boolean> {
-    const saved = this.readSession();
-    if (!saved) return false;
-    let alive = false;
-    try {
-      alive = await this.registry.reclaim(saved.n, saved.role);
-    } catch {
-      alive = false;
-    }
-    if (!alive) {
-      this.clearSession();
-      return false;
-    }
-    this.errorMsg.set(null);
-    this.gameNumber = saved.n;
-    this.gameId.set(`${saved.n}`);
-    this.myPlayer.set(saved.role === 'host' ? 0 : 1);
-
-    // Restore the exact game we left (reload wipes memory) so we don't come back
-    // to a blank board that then desyncs the other device; the reconnect's
-    // seq-resync reconciles anything that happened while we were away.
-    if (saved.game) {
-      this.game.restore(saved.game);
-      this.sentLog = saved.sentLog ?? [];
-      this.appliedSeq = saved.appliedSeq ?? 0;
-    }
-
-    // Rejoin through the reconnect path (never the fresh-start path) so neither
-    // side resets: the host re-registers its id and waits for the other to
-    // resume-dial; a joiner resume-dials the host. Both land in attachConnection
-    // with resume=true.
-    this.state.set('reconnecting');
-    this.registry.startPresence(saved.n, saved.role);
-    this.watchOpponent(saved.n, saved.role);
-    if (saved.role === 'host') {
-      this.hostWithId(saved.n);
-    } else {
-      this.redial();
-    }
-    return true;
-  }
-
-  /** Persist the live game so a reload/return resumes the exact same board. */
-  private persist(): void {
-    if (this.mode !== 'p2p' || this.gameNumber === null) return;
-    const role: SessionRole = this.myPlayer() === 0 ? 'host' : 'joiner';
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          n: this.gameNumber,
-          role,
-          appliedSeq: this.appliedSeq,
-          sentLog: this.sentLog,
-          game: this.game.snapshot(),
-        }),
-      );
-    } catch {
-      // private-mode / storage-full — resume-on-return just won't be available
-    }
-  }
-
-  private clearSession(): void {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // nothing we can do; a stale entry is harmless (reclaim re-validates it)
-    }
-  }
-
-  private readSession(): {
-    n: number;
-    role: SessionRole;
-    appliedSeq?: number;
-    sentLog?: GameAction[];
-    game?: GameSnapshot;
-  } | null {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const v = JSON.parse(raw) as {
-        n?: unknown;
-        role?: unknown;
-        appliedSeq?: number;
-        sentLog?: GameAction[];
-        game?: GameSnapshot;
-      };
-      if (typeof v.n === 'number' && (v.role === 'host' || v.role === 'joiner')) {
-        return { n: v.n, role: v.role, appliedSeq: v.appliedSeq, sentLog: v.sentLog, game: v.game };
-      }
-    } catch {
-      // malformed — treat as no saved session
-    }
-    return null;
   }
 
   /**

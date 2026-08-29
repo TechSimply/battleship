@@ -135,9 +135,7 @@ export class Game {
 
   /** The opponent's app is closed / off the link while a game is live. */
   protected readonly opponentAway = computed(
-    () =>
-      this.session.opponentPresent() === false &&
-      (this.session.state() === 'playing' || this.session.state() === 'reconnecting'),
+    () => this.session.opponentPresent() === false && this.session.state() === 'playing',
   );
 
   // Rule 8: session score, shown from this device's point of view.
@@ -155,16 +153,9 @@ export class Game {
 
   protected readonly message = computed(() => {
     const me = this.session.myPlayer();
-    // Firebase presence: the opponent's app is closed / they left the link.
-    // Shown over the phase text so the player isn't left guessing why nothing
-    // happens (rule 9). Recovers on its own if they come back.
-    if (
-      this.session.opponentPresent() === false &&
-      (this.session.state() === 'playing' || this.session.state() === 'reconnecting')
-    ) {
-      return 'Opponent left the game — waiting for them to come back…';
-    }
-    if (this.session.state() === 'reconnecting') return 'Connection lost — reconnecting';
+    // Firebase presence notices a closed app a moment before the data channel
+    // does, so say so rather than leaving the player staring at a dead board.
+    if (this.opponentAway()) return 'Opponent left the game';
     switch (this.game.phase()) {
       case 'placement':
         return this.game.players()[me].ship

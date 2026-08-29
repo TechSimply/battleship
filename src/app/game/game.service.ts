@@ -31,27 +31,8 @@ export interface PlayerState {
   destroyed: boolean[];
 }
 
-/** A full, serializable game state — for persisting a game across a reload (rule 9). */
-export interface GameSnapshot {
-  phase: Phase;
-  currentPlayer: PlayerId;
-  winner: PlayerId | null;
-  players: [PlayerState, PlayerState];
-  scores: [number, number];
-}
-
 const idx = (c: Coord) => c.y * BOARD_W + c.x;
 const sameCell = (a: Coord, b: Coord) => a.x === b.x && a.y === b.y;
-
-const cloneCoord = (c: Coord | null): Coord | null => (c ? { x: c.x, y: c.y } : null);
-function clonePlayer(p: PlayerState): PlayerState {
-  return {
-    ship: cloneCoord(p.ship),
-    shipDestroyed: p.shipDestroyed,
-    exposedAt: cloneCoord(p.exposedAt),
-    destroyed: [...p.destroyed],
-  };
-}
 
 function emptyPlayer(): PlayerState {
   return {
@@ -168,28 +149,6 @@ export class GameService {
     }
     const moved = this.neighborsOf(state.exposedAt, state.destroyed);
     return moved.length > 0 ? moved : [state.exposedAt];
-  }
-
-  /** A deep, serializable copy of the whole game — persisted so a reload can
-   *  drop the player straight back into the same game (rule 9). */
-  snapshot(): GameSnapshot {
-    const [a, b] = this.players();
-    return {
-      phase: this.phase(),
-      currentPlayer: this.currentPlayer(),
-      winner: this.winner(),
-      players: [clonePlayer(a), clonePlayer(b)],
-      scores: [...this.scores()],
-    };
-  }
-
-  /** Load a snapshot produced by snapshot() (or parsed from storage). */
-  restore(s: GameSnapshot): void {
-    this.phase.set(s.phase);
-    this.currentPlayer.set(s.currentPlayer);
-    this.winner.set(s.winner);
-    this.players.set([clonePlayer(s.players[0]), clonePlayer(s.players[1])]);
-    this.scores.set([s.scores[0], s.scores[1]]);
   }
 
   /** Reset the round for a rematch; the session score is kept (rule 8). */
