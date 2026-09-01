@@ -11,6 +11,14 @@ import { LobbyRegistryService } from './lobby-registry.service';
  * handler failed the session and destroyed the peer, and the recovery written
  * for exactly this case never got to run.
  *
+ * It came back, by a longer road. Reconnecting straight after a socket drop
+ * usually finds the broker still holding our own id, and PeerJS answers that
+ * with `unavailable-id` and throws the peer away. The peer we build to replace
+ * it has no history — so the *next* blip, on a session that had been happily
+ * sitting on a claimed number, read as "this device has never been online" and
+ * failed all over again. Hence `brokerSeen`: a fact about the session, not
+ * about whichever Peer object PeerJS currently has.
+ *
  * These tests drive the real SessionService against a stand-in Peer, so the
  * wiring is covered and not just the classification.
  */
@@ -77,6 +85,14 @@ class FakePeer {
   failToReachBroker(type = 'network'): void {
     this.emit('error', Object.assign(new Error('Could not connect to server.'), { type }));
     this.destroy();
+  }
+
+  /**
+   * What the broker says when we reconnect before it has noticed our old socket
+   * die: the id we are asking for is (still) our own. PeerJS destroys the peer.
+   */
+  idStillTaken(): void {
+    this.emit('error', Object.assign(new Error('ID is taken'), { type: 'unavailable-id' }));
   }
 }
 
@@ -176,12 +192,64 @@ describe('a backgrounded host keeps its game', () => {
     }
   });
 
-  it('still reports a socket that never came up at all', async () => {
+  it('keeps the same number when the broker is still holding it', async () => {
+    const peer = await hostAGame();
+    const id = session.gameId();
+
+    // Stepped out, came back, reconnected before the broker noticed the old
+    // socket die — so it hands back our own id as taken.
+    peer.dropSocket();
+    await vi.advanceTimersByTimeAsync(1_500);
+    peer.idStillTaken();
+
+    // The number is reserved for us in Firebase and the link is already sent:
+    // wait the broker out on that number rather than grabbing a different one.
+    await vi.advanceTimersByTimeAsync(2_500);
+    const rebuilt = FakePeer.instances.at(-1)!;
+    expect(rebuilt).not.toBe(peer);
+    rebuilt.reachBroker();
+
+    expect(session.state()).toBe('hosting');
+    expect(session.gameId()).toBe(id);
+  });
+
+  it('does not call a rebuilt peer’s first blip a dead connection', async () => {
+    // The exact chain that put the reported error back on screen: drop, an
+    // id-still-taken reconnect, then a network blip on the replacement peer
+    // before it has managed to open. The replacement has no history — but the
+    // session does, and the session is what decides.
+    const peer = await hostAGame();
+    const id = session.gameId();
+
+    peer.dropSocket();
+    await vi.advanceTimersByTimeAsync(1_500);
+    peer.idStillTaken();
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const rebuilt = FakePeer.instances.at(-1)!;
+    rebuilt.failToReachBroker(); // never got as far as 'open'
+
+    expect(session.state()).toBe('hosting');
+    expect(session.errorMsg()).toBeNull();
+
+    // And it keeps working the number rather than sitting on a dead peer.
+    await vi.advanceTimersByTimeAsync(5_000);
+    const next = FakePeer.instances.at(-1)!;
+    expect(next).not.toBe(rebuilt);
+    next.reachBroker();
+    expect(session.gameId()).toBe(id);
+  });
+
+  it('still reports a connection that never comes up at all', async () => {
     session.newGame();
     await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
-    // Never reached the broker: nothing was claimed and there is nothing to
-    // reconnect to, so the player does need to hear about their connection.
-    FakePeer.instances.at(-1)!.failToReachBroker();
+
+    // Never reached the broker, and every retry fails the same way: nothing was
+    // ever claimed, so the player does need to hear about their connection.
+    for (let attempt = 0; attempt < 8 && session.state() === 'hosting'; attempt++) {
+      FakePeer.instances.at(-1)!.failToReachBroker();
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
 
     expect(session.state()).toBe('error');
     expect(session.errorMsg()).toMatch(/check your internet/i);

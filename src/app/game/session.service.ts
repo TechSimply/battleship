@@ -24,6 +24,18 @@ import { LobbyRegistryService, SessionRecord, SessionRole, isPartyPresent } from
  * foreground triggers an immediate broker re-register (so Battle{n} is
  * reclaimed at once while waiting for player 2), and a screen wake lock is held
  * for the duration of a live game to make the OS less eager to suspend the tab.
+ *
+ * Getting back on the broker is a *session*-level job, not a peer-level one.
+ * PeerJS reconnects the peer it has when it can, but it also aborts and
+ * discards peers (a socket that never carried an id, an id the broker is still
+ * holding from the socket that just died), and every replacement arrives with
+ * no history. Judging a replacement on its own history is what used to greet a
+ * host — who had claimed a number, shared the link and stepped out for ten
+ * seconds — with "Connection problem — check your internet". So the fact that
+ * matters, `brokerSeen`, is kept on the session: once we have held a number,
+ * broker trouble is ridden out (reconnect, or rebuild the peer on the same
+ * reserved number) rather than reported, and the error screen is reached only
+ * with the app on screen and the retries genuinely spent.
  */
 
 /** Peer-id namespace so we never collide with unrelated PeerJS apps. */
@@ -41,19 +53,43 @@ const DIAL_TIMEOUT_MS = 5_000;
 /** Nobody is hosting that game any more — and it cannot be resumed. */
 const GAME_OVER_MSG = 'Game over — opponent left.';
 /**
- * Broker-socket errors that mean "the signalling link dropped", not "this
- * device is offline". PeerJS raises one of these whenever the socket to the
+ * Broker errors that mean "the signalling link is having a moment", not "this
+ * device is offline". PeerJS raises one of these whenever its socket to the
  * broker goes away — which is exactly what a phone does to a backgrounded tab,
- * i.e. every time the host leaves the app to send the invite. They are only
- * ever recoverable once we have actually been on the broker: PeerJS keeps the
- * peer alive and reconnectable in that case, and destroys it outright if the
- * socket never came up at all (which really is a connectivity problem).
+ * i.e. every time the host leaves the app to send the invite — and
+ * `server-error` whenever the broker's HTTP side is momentarily unreachable,
+ * which is what a just-unfrozen webview sees while its network comes back.
  */
-const SOCKET_DROP_ERRORS = new Set(['network', 'socket-closed', 'socket-error', 'disconnected']);
+const RECOVERABLE_ERRORS = new Set([
+  'network',
+  'socket-closed',
+  'socket-error',
+  'disconnected',
+  'server-error',
+]);
+/**
+ * How many times we rebuild the signalling peer from scratch before telling the
+ * player their connection is the problem — on a first connection, where there
+ * is nothing to lose and they are waiting on us, and once we have actually held
+ * a number on the broker, where an invite link is already out and giving up
+ * would strand it. Only ever counted down while the app is on screen (see
+ * `rebuildPeer`).
+ */
+const MAX_FIRST_REBUILDS = 4;
+const MAX_RECLAIM_REBUILDS = 20;
+/** Backoff between rebuilds: this times the attempt number, capped. */
+const PEER_REBUILD_MS = 1_000;
+const MAX_REBUILD_BACKOFF = 4;
+/** How long the broker may hold a just-dropped id before we stop waiting for it. */
+const MAX_ID_RETRIES = 30;
+/** Retry cadence while the broker still holds our id from the socket that just died. */
+const ID_RETRY_MS = 2_000;
+/** Cadence of the broker re-registration loop. */
+const REREGISTER_MS = 3_000;
 
 /** What a PeerJS error means for the session. */
 export type PeerErrorAction =
-  | 'recover' // transient broker-socket loss — re-register, keep the game
+  | 'recover' // transient broker trouble — re-register / rebuild, keep the game
   | 'not-found' // that game id isn't on the broker
   | 'fail' // unrecoverable — show the error screen
   | 'ignore'; // nothing to do in this state
@@ -63,17 +99,21 @@ export type PeerErrorAction =
  * kept ending games on its own — the host backgrounding the app to send the
  * invite, which drops the broker socket — is covered by a unit test.
  *
- * `everOpen` is the whole distinction for a socket drop: PeerJS only keeps a
- * peer reconnectable once it has been on the broker, and a socket that never
- * came up really is a connectivity problem worth telling the player about.
+ * `recoverable` says whether this session still has a way back: either it has
+ * already been on the broker (so the id is ours and worth reclaiming) or it
+ * still has rebuild attempts left. It is deliberately a fact about the
+ * *session*, not about one `Peer` object — PeerJS hands us a brand-new peer
+ * every time it aborts, and judging that fresh peer on its own history is what
+ * dumped a host who had been happily waiting on a claimed number into
+ * "Connection problem — check your internet".
  */
 export function peerErrorAction(
   type: string,
-  everOpen: boolean,
+  recoverable: boolean,
   state: SessionState,
 ): PeerErrorAction {
   if (type === 'peer-unavailable') return 'not-found';
-  if (everOpen && SOCKET_DROP_ERRORS.has(type)) return 'recover';
+  if (recoverable && RECOVERABLE_ERRORS.has(type)) return 'recover';
   return state === 'hosting' || state === 'joining' ? 'fail' : 'ignore';
 }
 
@@ -148,6 +188,16 @@ export class SessionService {
   private appliedSeq = 0;
 
   private reregisterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Armed while we are waiting to build a fresh signalling peer. */
+  private peerRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Has *this session* ever been on the broker? Once it has, our Battle{n} is a
+   * real reservation and every broker hiccup is worth riding out, however many
+   * `Peer` objects PeerJS burns through getting back to it.
+   */
+  private brokerSeen = false;
+  /** Consecutive peer rebuilds since we were last on the broker. */
+  private peerRebuilds = 0;
 
   /** 'p2p' = real opponent over PeerJS; 'bot' = local random computer. */
   private mode: 'p2p' | 'bot' = 'p2p';
@@ -261,6 +311,7 @@ export class SessionService {
   /** Rule 7.2: claim a random free Battle{n} id, then wait for player 2. */
   newGame(): void {
     this.errorMsg.set(null);
+    this.resetRecovery();
     this.state.set('hosting');
     void this.claimGameId();
   }
@@ -286,10 +337,19 @@ export class SessionService {
       return;
     }
     this.errorMsg.set(null);
+    this.resetRecovery();
     this.state.set('joining');
     this.gameNumber = n;
     this.gameId.set(`${n}`);
+    this.connectToBroker(n);
+  }
 
+  /**
+   * The joiner's signalling peer. Split out from `join()` so a broker that is
+   * simply not answering yet (a webview whose network has not woken up with it)
+   * can be retried on a fresh peer without restarting the join flow.
+   */
+  private connectToBroker(n: number): void {
     // No such peer on the broker = nobody is hosting that game any more.
     const peer = this.createPeer(new Peer(), (err) => {
       if (err.type === 'peer-unavailable' && this.state() === 'joining') {
@@ -357,7 +417,7 @@ export class SessionService {
     if (this.mode === 'p2p' && this.gameNumber !== null) void this.registry.terminate(this.gameNumber);
     else this.registry.stopPresence();
     this.stopWatchingOpponent();
-    this.stopReregisterLoop();
+    this.resetRecovery();
     this.mode = 'p2p';
     if (this.botTimer) clearTimeout(this.botTimer);
     this.botTimer = null;
@@ -407,12 +467,19 @@ export class SessionService {
    */
   private hostWithId(n: number, attempt = 0): void {
     if (this.state() !== 'hosting') return;
+    this.gameNumber = n; // ours from here on, so a rebuild knows what to reclaim
     const peer = this.createPeer(new Peer(PEER_PREFIX + n), (err) => {
       if (err.type === 'unavailable-id') {
         peer.destroy();
         if (this.state() !== 'hosting') return true;
-        if (attempt < 30) setTimeout(() => this.hostWithId(n, attempt + 1), 2_000);
-        else this.fail('Couldn’t start a game right now — please try again.');
+        // Typically our own just-dropped socket, still being held by the
+        // broker: the number is reserved for us in Firebase, so wait it out
+        // rather than moving the invite link the player has already sent.
+        if (attempt < MAX_ID_RETRIES) {
+          this.scheduleRetry(() => this.hostWithId(n, attempt + 1), ID_RETRY_MS);
+        } else {
+          this.fail('Couldn’t start a game right now — please try again.');
+        }
         return true;
       }
       return false;
@@ -510,13 +577,18 @@ export class SessionService {
   private createPeer(peer: Peer, handled?: (err: { type: string }) => boolean): Peer {
     this.peer?.destroy();
     this.peer = peer;
-    // Did this peer ever reach the broker? Registered here, before any caller's
-    // own 'open' handler, so it is already true by the time an error lands.
-    let everOpen = false;
-    peer.on('open', () => (everOpen = true));
+    // Reaching the broker is what makes everything after it recoverable, and it
+    // is recorded on the session rather than on this peer object: PeerJS aborts
+    // and replaces peers freely, and a replacement has no history of its own.
+    // Registered here, before any caller's own 'open' handler, so it is already
+    // true by the time an error lands.
+    peer.on('open', () => {
+      this.brokerSeen = true;
+      this.peerRebuilds = 0;
+    });
     peer.on('error', (err: Error & { type: string }) => {
       if (handled?.(err)) return;
-      switch (peerErrorAction(err.type, everOpen, this.state())) {
+      switch (peerErrorAction(err.type, this.canRecover(), this.state())) {
         case 'not-found':
           this.fail(`Couldn’t find that game. Check the id and try again.`);
           break;
@@ -524,9 +596,8 @@ export class SessionService {
           // The host stepping out to send the invite drops the broker socket,
           // and PeerJS reports that loss as an error before it reports the
           // disconnect. Failing here tore the game down over a routine,
-          // recoverable blip — and destroyed the peer, so the re-register loop
-          // below (written for exactly this) never got to run. Reconnect
-          // instead and keep the id: nothing has been played yet.
+          // recoverable blip. Get back on the broker instead and keep the id:
+          // nothing has been played yet, and the link is already shared.
           this.keepRegistered(peer);
           break;
         case 'fail':
@@ -540,40 +611,118 @@ export class SessionService {
     return peer;
   }
 
+  /** Is there still a way back to the broker worth trying quietly? */
+  private canRecover(): boolean {
+    return this.brokerSeen || this.peerRebuilds < MAX_FIRST_REBUILDS;
+  }
+
   /**
-   * Retry broker re-registration until it sticks. A single reconnect() is not
-   * enough: if the network is still down when it runs, PeerJS gives up
-   * silently and the Battle{n} id would stay lost even once we're back online.
+   * Get back on the broker and keep trying until it sticks. A single
+   * reconnect() is not enough: if the network is still down when it runs,
+   * PeerJS gives up silently and the Battle{n} id would stay lost even once
+   * we're back online. And PeerJS may have destroyed the peer outright (it
+   * aborts on a socket that never carried an id), in which case there is
+   * nothing to reconnect and the peer has to be built again from scratch.
    */
   private keepRegistered(peer: Peer): void {
     if (this.reregisterTimer) return; // a retry loop is already running
     const tick = () => {
       this.reregisterTimer = null;
-      if (peer.destroyed || peer !== this.peer || !peer.disconnected) return;
-      peer.reconnect();
-      this.reregisterTimer = setTimeout(tick, 3_000);
+      if (peer !== this.peer) return; // superseded by a newer peer
+      if (!this.needsBroker()) return;
+      if (peer.destroyed) {
+        this.rebuildPeer();
+        return;
+      }
+      if (!peer.disconnected) return; // back on the broker
+      try {
+        peer.reconnect();
+      } catch {
+        this.rebuildPeer(); // PeerJS refuses: only a fresh peer will do
+        return;
+      }
+      this.reregisterTimer = setTimeout(tick, REREGISTER_MS);
     };
     this.reregisterTimer = setTimeout(tick, 1_000);
   }
 
+  /** States in which losing the broker is worth chasing. */
+  private needsBroker(): boolean {
+    const s = this.state();
+    return this.mode === 'p2p' && (s === 'hosting' || s === 'joining' || s === 'playing');
+  }
+
   /**
-   * Tab came back to the foreground. If our signalling peer's broker socket
-   * dropped while we were away, reconnect it immediately so Battle{n} is
-   * reclaimed at once instead of after the throttled retry tick — then re-take
-   * the wake lock the browser released when we were hidden.
+   * PeerJS destroyed the signalling peer under us. While we are still setting a
+   * game up that is recoverable: the Battle{n} reservation lives in Firebase,
+   * not in the peer object, so we simply claim the same number again — and the
+   * invite link the player has already sent keeps pointing at this device.
+   *
+   * Bounded, so a genuinely offline phone is still told. The budget is only
+   * ever spent with the app on screen: a backgrounded tab burning through its
+   * retries and greeting the player with an error screen is the very bug this
+   * exists to stop.
+   */
+  private rebuildPeer(): void {
+    const s = this.state();
+    if (s !== 'hosting' && s !== 'joining') return; // mid-game: the data channel rules
+    if (this.peerRetryTimer) return; // one already on its way
+    const budget = this.brokerSeen ? MAX_RECLAIM_REBUILDS : MAX_FIRST_REBUILDS;
+    if (this.peerRebuilds >= budget && !this.hidden()) {
+      this.fail('Connection problem — check your internet and try again.');
+      return;
+    }
+    this.peerRebuilds++;
+    this.scheduleRetry(() => {
+      if (this.state() === 'hosting') {
+        if (this.gameNumber !== null) this.hostWithId(this.gameNumber);
+        else void this.claimGameId();
+      } else if (this.state() === 'joining' && this.gameNumber !== null) {
+        this.connectToBroker(this.gameNumber);
+      }
+    }, PEER_REBUILD_MS * Math.min(this.peerRebuilds, MAX_REBUILD_BACKOFF));
+  }
+
+  /** One pending peer rebuild at a time, whoever asked for it. */
+  private scheduleRetry(run: () => void, delay: number): void {
+    if (this.peerRetryTimer) return;
+    this.peerRetryTimer = setTimeout(() => {
+      this.peerRetryTimer = null;
+      run();
+    }, delay);
+  }
+
+  private hidden(): boolean {
+    return typeof document !== 'undefined' && document.visibilityState !== 'visible';
+  }
+
+  /**
+   * Tab came back to the foreground. Timers are frozen while a phone holds the
+   * app in the background, so whatever the retry loop was going to do, it has
+   * not done it yet — do it now, immediately, so Battle{n} is reclaimed by the
+   * time the player looks at the screen. Then re-take the wake lock the browser
+   * released when we were hidden.
    */
   private onVisible(): void {
     if (document.visibilityState !== 'visible') return;
-    const peer = this.peer;
-    if (peer && !peer.destroyed && peer.disconnected) {
-      try {
-        peer.reconnect();
-      } catch {
-        // already mid-reconnect — the keepRegistered loop covers us
-      }
-      this.keepRegistered(peer);
-    }
     const s = this.state();
+    if (this.needsBroker()) {
+      // A fresh foreground is a fresh chance: the player is watching now, and
+      // attempts made against a frozen network while they were away should not
+      // count towards giving up on them.
+      this.peerRebuilds = 0;
+      const peer = this.peer;
+      if (!peer || peer.destroyed) {
+        this.rebuildPeer();
+      } else if (peer.disconnected) {
+        try {
+          peer.reconnect();
+        } catch {
+          // already mid-reconnect — the keepRegistered loop covers us
+        }
+        this.keepRegistered(peer);
+      }
+    }
     if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing')) {
       void this.acquireWakeLock();
     }
@@ -635,10 +784,19 @@ export class SessionService {
   private stopReregisterLoop(): void {
     if (this.reregisterTimer) clearTimeout(this.reregisterTimer);
     this.reregisterTimer = null;
+    if (this.peerRetryTimer) clearTimeout(this.peerRetryTimer);
+    this.peerRetryTimer = null;
+  }
+
+  /** A new game starts with a clean recovery slate. */
+  private resetRecovery(): void {
+    this.stopReregisterLoop();
+    this.brokerSeen = false;
+    this.peerRebuilds = 0;
   }
 
   private fail(msg: string): void {
-    this.stopReregisterLoop();
+    this.resetRecovery();
     this.registry.stopPresence();
     this.stopWatchingOpponent();
     this.errorMsg.set(msg);

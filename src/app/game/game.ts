@@ -272,29 +272,50 @@ export class Game {
     const board = boards?.querySelector<HTMLElement>('.board');
     if (!boards || !wrap || !board) return;
 
-    const free = boards.getBoundingClientRect();
-    if (!free.width || !free.height) return; // not laid out (or hidden) yet
+    const panels = [...boards.querySelectorAll<HTMLElement>('.board-wrap')];
+    const rows = panels.length;
+    if (!rows) return;
+    if (!boards.getBoundingClientRect().height) return; // not laid out (or hidden) yet
     const gap = parseFloat(getComputedStyle(boards).rowGap) || 0;
+    const gaps = gap * (rows - 1);
 
+    const set = (size: number) => boards.style.setProperty('--board-size', `${size}px`);
     let applied = parseFloat(boards.style.getPropertyValue('--board-size')) || 0;
+
     for (let pass = 0; pass < FIT_PASSES; pass++) {
+      const free = boards.getBoundingClientRect();
       const wrapBox = wrap.getBoundingClientRect();
       const boardBox = board.getBoundingClientRect();
-      // What one panel costs around its board, measured against the board's
-      // *width* — that is exactly `--board-size` (the board is border-box),
-      // so any height the board carries beyond its own square is counted here
-      // as panel cost instead of being assumed away.
+      // What one panel costs around its board — its header, padding and border.
+      // Measured against the board's own box, which is `--board-size` square by
+      // construction (border-box, definite width *and* height), so this is
+      // purely the chrome and nothing about the board leaks into it.
       const panelX = wrapBox.width - boardBox.width;
-      const panelY = wrapBox.height - boardBox.width;
+      const panelY = wrapBox.height - boardBox.height;
 
-      const room = Math.min(free.width - panelX, (free.height - gap) / 2 - panelY, MAX_BOARD);
+      const room = Math.min(free.width - panelX, (free.height - gaps) / rows - panelY, MAX_BOARD);
       const size = Math.max(Math.floor(room - FIT_SLACK), MIN_BOARD);
-      if (size === applied) return; // settled — the panels measure the same as they render
+      if (size === applied) break; // settled — the panels measure the same as they render
       applied = size;
-      boards.style.setProperty('--board-size', `${size}px`);
+      set(size);
       // The next pass re-reads the panel against the size just written, so a
       // chrome that shifted with it (a rounded header, a font that loaded) is
       // taken off the next estimate rather than pushed off the screen.
+    }
+
+    // Last word: the model above is an estimate, and every device rounds it its
+    // own way. This is not an estimate — it is what the browser actually laid
+    // out. `.boards` centres and clips, so an overflow of even two pixels shows
+    // up as a shaved header on the top panel and a cut-off bottom row on the
+    // other. Measure the real panels, hand back whatever they went over by, and
+    // repeat until they genuinely fit.
+    for (let pass = 0; pass < FIT_PASSES && applied > MIN_BOARD; pass++) {
+      const free = boards.getBoundingClientRect().height;
+      const used = panels.reduce((h, p) => h + p.getBoundingClientRect().height, 0) + gaps;
+      const over = used - free;
+      if (over <= 0) break;
+      applied = Math.max(applied - Math.ceil(over / rows), MIN_BOARD);
+      set(applied);
     }
   }
 

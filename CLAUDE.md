@@ -53,11 +53,19 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   (`network` / `socket-closed` / `socket-error`) *before* the `disconnected` the retry loop
   listens for, so an error handler that treats those as fatal kills the peer and the retry
   loop never runs — which is what used to dump a host into "Connection problem — check your
-  internet" the moment they left the app to send the invite. `peerErrorAction()` keeps them
-  apart: a socket drop is only recoverable once the peer has actually been on the broker
-  (PeerJS destroys a peer whose socket never came up, and that really is a connectivity
-  problem). Leaving sends `bye`. Dev builds expose `__battleshipDrop()` to sever the
-  channel in tests.
+  internet" the moment they left the app to send the invite.
+  **Recovery is a property of the session, not of a `Peer`.** PeerJS aborts and discards
+  peers freely — a socket that never carried an id, or (very common) a reconnect that lands
+  while the broker is still holding the id from the socket that just died, which comes back
+  as `unavailable-id`. Every replacement peer arrives with no history, so judging it on its
+  own history put that same error back on screen for a host who had been sitting on a
+  claimed number. Hence `brokerSeen` on the service: once we have held a number, broker
+  trouble is ridden out — reconnect if the peer survives, otherwise `rebuildPeer()` claims
+  the *same* reserved number again so the link already shared keeps working — and the error
+  screen is reached only with the app on screen (never while backgrounded) and the retry
+  budget genuinely spent. `peerErrorAction()` classifies; `session.peer-drop.spec.ts` drives
+  the whole chain against a stand-in Peer. Leaving sends `bye`. Dev builds expose
+  `__battleshipDrop()` to sever the channel in tests.
 - `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database bookkeeping for
   rule 9 (project `battleship-p2p`, europe-west1; rules in `database.rules.json`). Holds one
   `/sessions/{n}` record per game: `claim()` reserves a number atomically, presence heartbeats
@@ -80,11 +88,14 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   then the boards taking all the space that's left. `fitBoards()` measures that
   leftover space after every render (and on resize/rotation) and sets `--board-size`,
   so the two boards always fit exactly; the chrome itself scales with the `--ui`
-  clamp, zooming out on smaller screens. It measures fractionally and re-checks the
-  panels against the size it just wrote — `offsetWidth`/`offsetHeight` round to whole
-  pixels and the board's `aspect-ratio: 1` rows snap to the device pixel grid, so an
-  open-loop fit can miss by a couple of pixels, and `.boards` centres and clips rather
-  than scrolls: the miss shows up as a shaved top header and a cut-off bottom row.
+  clamp, zooming out on smaller screens. `.boards` centres and clips rather than
+  scrolls, so a fit that misses by a couple of pixels shows up as a shaved top header
+  and a cut-off bottom row. Two things keep it honest. The board is `--board-size`
+  square *by construction* — definite width and height plus
+  `grid-template-rows: repeat(4, 1fr)`, never four `aspect-ratio: 1` cells whose
+  separately-rounded row heights add up to whatever the device pixel grid says. And
+  the fit ends by measuring the panels as they were actually laid out and handing back
+  any overflow, instead of trusting its own model of the chrome.
   Firing flies a rocket from the shooter's square to the bombed square and leaves its
   burning exhaust behind: one trail per player, replaced only by that same player's next
   shot. Rocket and trails are rendered from the template (never `createElement` — the

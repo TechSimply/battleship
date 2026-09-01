@@ -449,10 +449,19 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   position: relative;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  // Explicit rows, and a height as definite as the width. The obvious spelling
+  // — four `aspect-ratio: 1` cells and let the board take the height that
+  // falls out — makes the board's height a *sum of four rounded row heights*,
+  // so it can land a pixel or two over `--board-size` on any given device.
+  // `.boards` clips rather than scrolls, so those stray pixels came off the
+  // bottom row as a visible shave. Four equal rows of a definite height cannot
+  // add up to anything but that height.
+  grid-template-rows: repeat(4, 1fr);
   // Border-box keeps the rendered board exactly `--board-size` tall and wide,
   // which is what game.ts's fit measurement assumes.
   box-sizing: border-box;
   width: var(--board-size);
+  height: var(--board-size);
   margin: 0 auto;
   border-radius: 0.7em;
   overflow: hidden;
@@ -512,7 +521,11 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
 
 .cell {
   position: relative; // keeps cells above the board's ::before caustics layer
-  aspect-ratio: 1;
+  // No aspect-ratio: the grid's four equal rows already make each cell square,
+  // and a self-sizing cell is exactly what used to push the board past the
+  // height it was measured for.
+  min-width: 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -1,11 +1,16 @@
 /* Global dark ocean theme */
 html {
   color-scheme: dark;
+  // The game screen is a fixed, viewport-sized layer. A rubber-band overscroll
+  // drags that layer with it on iOS, which reads as the whole app sliding up
+  // under the status bar and losing its bottom row.
+  overscroll-behavior: none;
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
+  overscroll-behavior: none;
   background:
     radial-gradient(120% 70% at 50% -10%, #10263e 0%, rgba(16, 38, 62, 0) 60%),
     radial-gradient(100% 60% at 50% 110%, #071527 0%, rgba(7, 21, 39, 0) 55%),
