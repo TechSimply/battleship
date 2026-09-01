@@ -40,6 +40,42 @@ const MAX_CLAIM_ATTEMPTS = 50;
 const DIAL_TIMEOUT_MS = 5_000;
 /** Nobody is hosting that game any more — and it cannot be resumed. */
 const GAME_OVER_MSG = 'Game over — opponent left.';
+/**
+ * Broker-socket errors that mean "the signalling link dropped", not "this
+ * device is offline". PeerJS raises one of these whenever the socket to the
+ * broker goes away — which is exactly what a phone does to a backgrounded tab,
+ * i.e. every time the host leaves the app to send the invite. They are only
+ * ever recoverable once we have actually been on the broker: PeerJS keeps the
+ * peer alive and reconnectable in that case, and destroys it outright if the
+ * socket never came up at all (which really is a connectivity problem).
+ */
+const SOCKET_DROP_ERRORS = new Set(['network', 'socket-closed', 'socket-error', 'disconnected']);
+
+/** What a PeerJS error means for the session. */
+export type PeerErrorAction =
+  | 'recover' // transient broker-socket loss — re-register, keep the game
+  | 'not-found' // that game id isn't on the broker
+  | 'fail' // unrecoverable — show the error screen
+  | 'ignore'; // nothing to do in this state
+
+/**
+ * Classify a PeerJS error. Split out from the handler so the one case that
+ * kept ending games on its own — the host backgrounding the app to send the
+ * invite, which drops the broker socket — is covered by a unit test.
+ *
+ * `everOpen` is the whole distinction for a socket drop: PeerJS only keeps a
+ * peer reconnectable once it has been on the broker, and a socket that never
+ * came up really is a connectivity problem worth telling the player about.
+ */
+export function peerErrorAction(
+  type: string,
+  everOpen: boolean,
+  state: SessionState,
+): PeerErrorAction {
+  if (type === 'peer-unavailable') return 'not-found';
+  if (everOpen && SOCKET_DROP_ERRORS.has(type)) return 'recover';
+  return state === 'hosting' || state === 'joining' ? 'fail' : 'ignore';
+}
 
 export type SessionState =
   | 'lobby' // choosing New Game / Join The Game (rule 7.1)
@@ -474,12 +510,28 @@ export class SessionService {
   private createPeer(peer: Peer, handled?: (err: { type: string }) => boolean): Peer {
     this.peer?.destroy();
     this.peer = peer;
+    // Did this peer ever reach the broker? Registered here, before any caller's
+    // own 'open' handler, so it is already true by the time an error lands.
+    let everOpen = false;
+    peer.on('open', () => (everOpen = true));
     peer.on('error', (err: Error & { type: string }) => {
       if (handled?.(err)) return;
-      if (err.type === 'peer-unavailable') {
-        this.fail(`Couldn’t find that game. Check the id and try again.`);
-      } else if (this.state() === 'hosting' || this.state() === 'joining') {
-        this.fail('Connection problem — check your internet and try again.');
+      switch (peerErrorAction(err.type, everOpen, this.state())) {
+        case 'not-found':
+          this.fail(`Couldn’t find that game. Check the id and try again.`);
+          break;
+        case 'recover':
+          // The host stepping out to send the invite drops the broker socket,
+          // and PeerJS reports that loss as an error before it reports the
+          // disconnect. Failing here tore the game down over a routine,
+          // recoverable blip — and destroyed the peer, so the re-register loop
+          // below (written for exactly this) never got to run. Reconnect
+          // instead and keep the id: nothing has been played yet.
+          this.keepRegistered(peer);
+          break;
+        case 'fail':
+          this.fail('Connection problem — check your internet and try again.');
+          break;
       }
     });
     // Broker socket dropped (backgrounded tab, network blip): re-register so

@@ -49,7 +49,14 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   The one exception: if the host's connection dies before any action crossed it, that is the
   invite-link ghost dial, so the host just goes back to `hosting` (nothing was played).
   Broker-socket loss triggers a re-register retry loop so the id stays claimed while waiting
-  for player 2. Leaving sends `bye`. Dev builds expose `__battleshipDrop()` to sever the
+  for player 2. **Mind the order PeerJS reports that loss in:** it emits an `error`
+  (`network` / `socket-closed` / `socket-error`) *before* the `disconnected` the retry loop
+  listens for, so an error handler that treats those as fatal kills the peer and the retry
+  loop never runs — which is what used to dump a host into "Connection problem — check your
+  internet" the moment they left the app to send the invite. `peerErrorAction()` keeps them
+  apart: a socket drop is only recoverable once the peer has actually been on the broker
+  (PeerJS destroys a peer whose socket never came up, and that really is a connectivity
+  problem). Leaving sends `bye`. Dev builds expose `__battleshipDrop()` to sever the
   channel in tests.
 - `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database bookkeeping for
   rule 9 (project `battleship-p2p`, europe-west1; rules in `database.rules.json`). Holds one
@@ -73,7 +80,11 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   then the boards taking all the space that's left. `fitBoards()` measures that
   leftover space after every render (and on resize/rotation) and sets `--board-size`,
   so the two boards always fit exactly; the chrome itself scales with the `--ui`
-  clamp, zooming out on smaller screens.
+  clamp, zooming out on smaller screens. It measures fractionally and re-checks the
+  panels against the size it just wrote — `offsetWidth`/`offsetHeight` round to whole
+  pixels and the board's `aspect-ratio: 1` rows snap to the device pixel grid, so an
+  open-loop fit can miss by a couple of pixels, and `.boards` centres and clips rather
+  than scrolls: the miss shows up as a shaved top header and a cut-off bottom row.
   Firing flies a rocket from the shooter's square to the bombed square and leaves its
   burning exhaust behind: one trail per player, replaced only by that same player's next
   shot. Rocket and trails are rendered from the template (never `createElement` — the

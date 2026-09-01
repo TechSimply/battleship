@@ -73,6 +73,15 @@ interface ShotGeom {
 /** Bounds for the measured board size, in px: playable floor, tidy ceiling. */
 const MIN_BOARD = 32;
 const MAX_BOARD = 420;
+/**
+ * Pixels held back from the measured fit. Board and panel geometry is snapped
+ * to device pixels, so a board sized to the last hundredth of the space can
+ * still land a fraction over it once painted — and `.boards` clips that
+ * overflow (top *and* bottom, it centres its content) rather than scrolling it.
+ */
+const FIT_SLACK = 1;
+/** Re-measure passes per fit; see `fitBoards`. Two is normally plenty. */
+const FIT_PASSES = 3;
 
 @Component({
   selector: 'app-game',
@@ -245,6 +254,17 @@ export class Game {
    * over, so measuring it needs no hardcoded chrome estimate: the boards are
    * sized to exactly half of that space (minus one board panel's own padding
    * and header), and shrink — "zoom out" — as the viewport gets smaller.
+   *
+   * Everything is measured fractionally and re-measured after being applied.
+   * `offsetWidth`/`offsetHeight` round to whole pixels, and a panel that
+   * rounds down leaves the pair a hair too tall for the row; the board's own
+   * height is likewise not exactly `--board-size`, since its four
+   * `aspect-ratio: 1` rows each snap to the device pixel grid. Either way the
+   * excess is invisible in the numbers but not on screen: `.boards` centres
+   * its content and hides the overflow, so a fit that misses by a couple of
+   * pixels quietly shaves the top board's header and the bottom board's last
+   * row — the exact symptom this loop exists to prevent. Correcting against
+   * the applied size absorbs all of it, whatever the device rounds to.
    */
   private fitBoards(): void {
     const boards = this.host.nativeElement.querySelector<HTMLElement>('#boards');
@@ -254,18 +274,27 @@ export class Game {
 
     const free = boards.getBoundingClientRect();
     if (!free.width || !free.height) return; // not laid out (or hidden) yet
-
-    // What one panel costs around its board. Constant in the board's size —
-    // the board itself is border-box and exactly `--board-size` square — so a
-    // single measurement pass lands on the final value.
-    const panelX = wrap.offsetWidth - board.offsetWidth;
-    const panelY = wrap.offsetHeight - board.offsetHeight;
     const gap = parseFloat(getComputedStyle(boards).rowGap) || 0;
 
-    const size = Math.min(free.width - panelX, (free.height - gap) / 2 - panelY, MAX_BOARD);
-    const fitted = `${Math.max(Math.floor(size), MIN_BOARD)}px`;
-    if (boards.style.getPropertyValue('--board-size') !== fitted) {
-      boards.style.setProperty('--board-size', fitted);
+    let applied = parseFloat(boards.style.getPropertyValue('--board-size')) || 0;
+    for (let pass = 0; pass < FIT_PASSES; pass++) {
+      const wrapBox = wrap.getBoundingClientRect();
+      const boardBox = board.getBoundingClientRect();
+      // What one panel costs around its board, measured against the board's
+      // *width* — that is exactly `--board-size` (the board is border-box),
+      // so any height the board carries beyond its own square is counted here
+      // as panel cost instead of being assumed away.
+      const panelX = wrapBox.width - boardBox.width;
+      const panelY = wrapBox.height - boardBox.width;
+
+      const room = Math.min(free.width - panelX, (free.height - gap) / 2 - panelY, MAX_BOARD);
+      const size = Math.max(Math.floor(room - FIT_SLACK), MIN_BOARD);
+      if (size === applied) return; // settled — the panels measure the same as they render
+      applied = size;
+      boards.style.setProperty('--board-size', `${size}px`);
+      // The next pass re-reads the panel against the size just written, so a
+      // chrome that shifted with it (a rounded header, a font that loaded) is
+      // taken off the next estimate rather than pushed off the screen.
     }
   }
 
