@@ -48,8 +48,16 @@ const MIN_GAME_ID = 1000;
 const MAX_GAME_ID = 9999;
 /** Give up after this many random collisions (the id space is ~9000 wide). */
 const MAX_CLAIM_ATTEMPTS = 50;
-/** Safety net for a handshake that stalls; a live host answers in well under this. */
+/** Safety net for a handshake that stalls; an awake host answers in well under this. */
 const DIAL_TIMEOUT_MS = 5_000;
+/**
+ * How long a joiner keeps knocking before calling the game gone. Long enough
+ * to cover the usual shape of an invite: the host sends the link, their phone
+ * puts the app to sleep, the friend opens it, and the host taps back in.
+ */
+const JOIN_WINDOW_MS = 60_000;
+/** Pause between knocks while the host's app is asleep. */
+const REDIAL_MS = 2_000;
 /** Nobody is hosting that game any more — and it cannot be resumed. */
 const GAME_OVER_MSG = 'Game over — opponent left.';
 /**
@@ -86,6 +94,8 @@ const MAX_ID_RETRIES = 30;
 const ID_RETRY_MS = 2_000;
 /** Cadence of the broker re-registration loop. */
 const REREGISTER_MS = 3_000;
+/** Reconnects of the same peer before we throw it away and build a new one. */
+const MAX_RECONNECTS = 3;
 
 /** What a PeerJS error means for the session. */
 export type PeerErrorAction =
@@ -175,6 +185,12 @@ export class SessionService {
    * Driven by Firebase presence so a closed app is noticed in seconds.
    */
   readonly opponentPresent = signal<boolean | null>(null);
+  /**
+   * Joining, and the host has not picked up yet — almost always because their
+   * phone has the app asleep. Lets the lobby say so instead of leaving player 2
+   * watching a spinner that looks stuck.
+   */
+  readonly waitingForHost = signal(false);
 
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
@@ -188,8 +204,18 @@ export class SessionService {
   private appliedSeq = 0;
 
   private reregisterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive broker reconnects that have not got us back on. */
+  private reregisterTries = 0;
   /** Armed while we are waiting to build a fresh signalling peer. */
   private peerRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Armed between knocks on a host who has not picked up. */
+  private redialTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Knock counter, so a superseded dial's timers cannot end the next one. */
+  private dialSeq = 0;
+  /** When to stop knocking and call the game gone. */
+  private joinDeadline = 0;
+  /** The registry is asked about the number once per join, not once per knock. */
+  private existenceChecked = false;
   /**
    * Has *this session* ever been on the broker? Once it has, our Battle{n} is a
    * real reservation and every broker hiccup is worth riding out, however many
@@ -327,8 +353,14 @@ export class SessionService {
   /**
    * Rule 7.3: player 2 joins with the id player 1 shared. Exactly one attempt —
    * a host who is there answers in well under a second, and if they are not the
-   * broker says so just as fast. A dropped game cannot be resumed, so there is
-   * nothing to wait for: we say the game is over instead of retrying.
+   * broker says so just as fast — but only if the host's phone is actually
+   * awake. Between sending an invite and the friend tapping it, the host has
+   * been sitting in a messaging app, and a suspended PWA holds no broker
+   * socket: its Battle{n} is simply not there to dial. One unanswered dial is
+   * therefore not a dead game, it is a sleeping one, so we keep knocking for
+   * `JOIN_WINDOW_MS` — the host re-registers the moment they look at their
+   * screen — and only call it over when the window runs out or the registry
+   * says the number was never live.
    */
   join(idText: string): void {
     const n = parseGameId(idText);
@@ -339,8 +371,10 @@ export class SessionService {
     this.errorMsg.set(null);
     this.resetRecovery();
     this.state.set('joining');
+    this.waitingForHost.set(false);
     this.gameNumber = n;
     this.gameId.set(`${n}`);
+    this.joinDeadline = Date.now() + JOIN_WINDOW_MS;
     this.connectToBroker(n);
   }
 
@@ -350,10 +384,12 @@ export class SessionService {
    * can be retried on a fresh peer without restarting the join flow.
    */
   private connectToBroker(n: number): void {
-    // No such peer on the broker = nobody is hosting that game any more.
+    // The host's id is not on the broker right now — most likely their phone
+    // has the app asleep. Knock again rather than declaring the game over.
     const peer = this.createPeer(new Peer(), (err) => {
       if (err.type === 'peer-unavailable' && this.state() === 'joining') {
-        this.fail(GAME_OVER_MSG);
+        this.dialSeq++; // this dial is answered; its own timers are now stale
+        this.hostNotAnswering();
         return true;
       }
       return false;
@@ -364,22 +400,82 @@ export class SessionService {
     });
   }
 
-  /** The single join attempt: anything but a connection means there is no game. */
+  /**
+   * One dial attempt. Superseded attempts are ignored by generation number:
+   * a `peer-unavailable` and the dial's own timeout can both land for the same
+   * knock, and neither may be allowed to tear down the knock after it.
+   */
   private dialHost(peer: Peer, n: number): void {
     if (this.state() !== 'joining') return;
+    const gen = ++this.dialSeq;
+    const current = () => gen === this.dialSeq && this.state() === 'joining';
     const conn = peer.connect(PEER_PREFIX + n, { reliable: true });
     const giveUp = setTimeout(() => {
-      conn.close();
-      this.fail(GAME_OVER_MSG);
+      conn.close(); // superseded or not, this knock is over
+      if (current()) this.hostNotAnswering();
     }, DIAL_TIMEOUT_MS);
     conn.on('open', () => {
       clearTimeout(giveUp);
+      if (!current()) {
+        conn.close(); // a later knock got through first
+        return;
+      }
       this.attachConnection(conn, 1);
     });
     conn.on('error', () => {
       clearTimeout(giveUp);
-      this.fail(GAME_OVER_MSG);
+      if (current()) this.hostNotAnswering();
     });
+  }
+
+  /**
+   * The host did not pick up. Keep knocking until the join window runs out —
+   * a host whose app is asleep comes back on the broker as soon as they look
+   * at their screen, which is exactly when their friend tells them the link is
+   * open. The registry is the one thing that can say the game is genuinely
+   * gone, so ask it once and believe a definite "no".
+   */
+  private hostNotAnswering(): void {
+    if (this.state() !== 'joining' || this.gameNumber === null) return;
+    if (Date.now() >= this.joinDeadline) {
+      this.fail(GAME_OVER_MSG);
+      return;
+    }
+    // Say what is happening: silence on this screen reads as a hang.
+    this.waitingForHost.set(true);
+    this.checkGameStillExists(this.gameNumber);
+    if (this.redialTimer) return;
+    this.redialTimer = setTimeout(() => {
+      this.redialTimer = null;
+      this.redial();
+    }, REDIAL_MS);
+  }
+
+  /** Knock again — on the same peer if it is still on the broker, else a new one. */
+  private redial(): void {
+    const n = this.gameNumber;
+    if (this.state() !== 'joining' || n === null) return;
+    const peer = this.peer;
+    if (peer && !peer.destroyed && !peer.disconnected && peer.open) this.dialHost(peer, n);
+    else this.connectToBroker(n);
+  }
+
+  /**
+   * Ask the registry once whether this number was ever a real game. Only a
+   * definite "no" ends the join: Firebase being unreachable must not turn a
+   * live game into "opponent left" (gameplay never depends on it).
+   */
+  private checkGameStillExists(n: number): void {
+    if (this.existenceChecked) return;
+    this.existenceChecked = true;
+    this.registry
+      .isAlive(n)
+      .then((alive) => {
+        if (!alive && this.state() === 'joining') this.fail(GAME_OVER_MSG);
+      })
+      .catch(() => {
+        // registry unreachable — keep knocking; PeerJS is the source of truth
+      });
   }
 
   /** Forward a local tap; applies it and mirrors it to the opponent. */
@@ -537,6 +633,7 @@ export class SessionService {
     this.conn = conn; // before old.close() so its events read as superseded
     old?.close();
     this.myPlayer.set(me);
+    this.waitingForHost.set(false);
     this.sentSeq = 0;
     this.appliedSeq = 0;
     this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
@@ -585,6 +682,7 @@ export class SessionService {
     peer.on('open', () => {
       this.brokerSeen = true;
       this.peerRebuilds = 0;
+      this.reregisterTries = 0;
     });
     peer.on('error', (err: Error & { type: string }) => {
       if (handled?.(err)) return;
@@ -635,6 +733,16 @@ export class SessionService {
         return;
       }
       if (!peer.disconnected) return; // back on the broker
+      // Reconnecting the same peer is the cheap fix, but it is not always the
+      // one that works — and looping on it forever would leave the player
+      // watching a screen that says everything is fine while their number is
+      // not on the broker at all. After a few goes, hand over to rebuildPeer,
+      // which owns the retry budget and eventually says so out loud.
+      if (this.reregisterTries >= MAX_RECONNECTS) {
+        this.rebuildPeer();
+        return;
+      }
+      this.reregisterTries++;
       try {
         peer.reconnect();
       } catch {
@@ -711,6 +819,7 @@ export class SessionService {
       // attempts made against a frozen network while they were away should not
       // count towards giving up on them.
       this.peerRebuilds = 0;
+      this.reregisterTries = 0;
       const peer = this.peer;
       if (!peer || peer.destroyed) {
         this.rebuildPeer();
@@ -721,6 +830,10 @@ export class SessionService {
           // already mid-reconnect — the keepRegistered loop covers us
         }
         this.keepRegistered(peer);
+      } else if (s === 'joining' && this.waitingForHost()) {
+        // Player 2 came back to a knock that has been frozen with the tab.
+        // Try the host again now rather than on a timer that never ran.
+        this.redial();
       }
     }
     if (this.mode !== 'bot' && (s === 'hosting' || s === 'playing')) {
@@ -786,6 +899,8 @@ export class SessionService {
     this.reregisterTimer = null;
     if (this.peerRetryTimer) clearTimeout(this.peerRetryTimer);
     this.peerRetryTimer = null;
+    if (this.redialTimer) clearTimeout(this.redialTimer);
+    this.redialTimer = null;
   }
 
   /** A new game starts with a clean recovery slate. */
@@ -793,6 +908,11 @@ export class SessionService {
     this.stopReregisterLoop();
     this.brokerSeen = false;
     this.peerRebuilds = 0;
+    this.reregisterTries = 0;
+    this.dialSeq++; // orphan any dial still in flight from a previous attempt
+    this.joinDeadline = 0;
+    this.existenceChecked = false;
+    this.waitingForHost.set(false);
   }
 
   private fail(msg: string): void {

@@ -33,6 +33,14 @@
         <p id="joining-waiting" class="waiting">
           Joining {{ session.gameId() }}<span id="joining-waiting-dots" class="dots"></span>
         </p>
+        <!-- The host's phone has almost certainly put the app to sleep behind
+             the messaging app they sent the link from. Say so, so the wait
+             reads as a wait and player 2 knows what unblocks it. -->
+        @if (session.waitingForHost()) {
+          <p id="joining-hint" class="hint">
+            Still knocking — ask them to open Ship Duel on their phone.
+          </p>
+        }
         <button id="cancel-join-btn" class="btn ghost" (click)="back()">Cancel</button>
       </section>
     }

@@ -40,6 +40,16 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   actions flow over the data channel, each numbered per sender and applied strictly in order
   exactly once (`actionInOrder`). Handles join errors and opponent-disconnect. `parseGameId()`
   accepts `Battle3` / `battle 3` / `3`.
+  **The joiner knocks, it does not knock once.** The normal shape of an invite is: host sends
+  the link from a messaging app, which puts their PWA to sleep and takes `Battle{n}` off the
+  broker with it, and player 2 opens the link during exactly that gap. A single dial answered
+  with `peer-unavailable` therefore means "asleep", not "gone", and failing on it made every
+  invite land on "Game over — opponent left". `dialHost()` now re-dials every 2s for
+  `JOIN_WINDOW_MS` (the host re-registers the moment they look at their screen), knocks carry
+  a generation number so a superseded dial's timeout cannot tear down the one that got
+  through, and only two things end it early: the window running out, or `registry.isAlive()`
+  answering a definite `false` (a Firebase that is merely unreachable must never downgrade a
+  live game to "opponent left"). `session.waitingForHost` tells the lobby to say so.
   **There is deliberately no reconnect/resume.** Losing the data channel — closing the tab,
   quitting the PWA, a network drop — ends the game: both sides go to `disconnected` and must
   start a new one. An earlier version tried to resume by replaying missed actions, but the

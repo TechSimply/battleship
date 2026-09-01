@@ -57,8 +57,21 @@ class FakePeer {
     this.open = true;
   }
 
-  connect(): unknown {
-    return { on: () => {}, close: () => {} };
+  /** Every dial this peer has made, newest last. */
+  dials: FakeConn[] = [];
+
+  connect(): FakeConn {
+    const conn = new FakeConn();
+    this.dials.push(conn);
+    return conn;
+  }
+
+  /** The broker has no such id right now — the host's app is asleep. */
+  peerUnavailable(): void {
+    this.emit(
+      'error',
+      Object.assign(new Error('Could not connect to peer'), { type: 'peer-unavailable' }),
+    );
   }
 
   // --- driving the fake from a test ---
@@ -96,6 +109,28 @@ class FakePeer {
   }
 }
 
+/** A dial in progress: the joiner's end of `peer.connect()`. */
+class FakeConn {
+  private handlers: Record<string, ((arg?: unknown) => void)[]> = {};
+  closed = false;
+
+  on(event: string, cb: (arg?: unknown) => void): this {
+    (this.handlers[event] ??= []).push(cb);
+    return this;
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  send(): void {}
+
+  /** The host picked up. */
+  accept(): void {
+    for (const cb of this.handlers['open'] ?? []) cb();
+  }
+}
+
 vi.mock('peerjs', () => ({ default: FakePeer }));
 
 /** Firebase is not reachable under test; hand back a claim that always works. */
@@ -103,6 +138,7 @@ class FakeRegistry {
   presence: number | null = null;
   terminated: number[] = [];
   claim = vi.fn(async (n: number) => n > 0);
+  isAlive = vi.fn(async () => true);
   markJoined = vi.fn(async () => {});
   terminate = vi.fn(async (n: number) => void this.terminated.push(n));
   startPresence = vi.fn((n: number) => void (this.presence = n));
@@ -238,6 +274,89 @@ describe('a backgrounded host keeps its game', () => {
     expect(next).not.toBe(rebuilt);
     next.reachBroker();
     expect(session.gameId()).toBe(id);
+  });
+
+  /** Player 2 through to a peer of their own on the broker, mid-dial. */
+  async function openTheLink(): Promise<FakePeer> {
+    session.join('4242');
+    await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
+    const peer = FakePeer.instances.at(-1)!;
+    peer.reachBroker();
+    return peer;
+  }
+
+  it('keeps knocking while the host’s phone has the app asleep', async () => {
+    // The whole shape of an invite: the host sends the link from a messaging
+    // app, which puts their PWA to sleep and takes Battle{n} off the broker
+    // with it. Player 2 opens the link during exactly that gap. Calling the
+    // game over on the first unanswered knock made every invite fail.
+    const peer = await openTheLink();
+    expect(peer.dials.length).toBe(1);
+
+    peer.peerUnavailable();
+    expect(session.state()).toBe('joining'); // not 'error'
+    expect(session.errorMsg()).toBeNull();
+    expect(session.waitingForHost()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(peer.dials.length).toBe(2); // knocked again
+
+    peer.dials.at(-1)!.accept(); // host tapped back into the app
+    expect(session.state()).toBe('playing');
+    expect(session.waitingForHost()).toBe(false);
+  });
+
+  it('a stale knock cannot tear down the one that got through', async () => {
+    const peer = await openTheLink();
+    const first = peer.dials[0];
+
+    peer.peerUnavailable();
+    await vi.advanceTimersByTimeAsync(2_500);
+    peer.dials.at(-1)!.accept();
+    expect(session.state()).toBe('playing');
+
+    // The first knock's 5s timeout now comes due. It belongs to a dial that
+    // has been superseded, so it must not end the game that is under way.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(session.state()).toBe('playing');
+    expect(first.closed).toBe(true);
+  });
+
+  it('gives up once the join window really has run out', async () => {
+    const peer = await openTheLink();
+    for (let i = 0; i < 60 && session.state() === 'joining'; i++) {
+      const p = FakePeer.instances.at(-1)!;
+      if (p.dials.length) p.peerUnavailable();
+      await vi.advanceTimersByTimeAsync(3_000);
+    }
+    expect(session.state()).toBe('error');
+    expect(session.errorMsg()).toMatch(/opponent left/i);
+    expect(peer.dials.length).toBeGreaterThan(1); // it did keep trying
+  });
+
+  it('believes the registry when the number was never a game', async () => {
+    // A mistyped id should not cost the player a minute of knocking.
+    registry.isAlive = vi.fn(async () => false);
+    const peer = await openTheLink();
+    peer.peerUnavailable();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(session.state()).toBe('error');
+    expect(session.errorMsg()).toMatch(/opponent left/i);
+  });
+
+  it('keeps knocking when the registry itself is unreachable', async () => {
+    // Firebase being down must never turn a live game into "opponent left" —
+    // gameplay does not go through it.
+    registry.isAlive = vi.fn(async () => {
+      throw new Error('offline');
+    });
+    const peer = await openTheLink();
+    peer.peerUnavailable();
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(session.state()).toBe('joining');
+    expect(peer.dials.length).toBe(2);
   });
 
   it('still reports a connection that never comes up at all', async () => {
