@@ -31,14 +31,16 @@
   arrived through an invite link may never see the lobby, so this cannot live
   there. It sits in its own strip at the bottom that both screens reserve
   (`--install-strip` below), rather than floating over the fleet board where it
-  would eat taps meant for the last row of cells.
+  would eat taps meant for the last row of cells — and in a game, where that
+  strip is ocean the player would rather keep, it is only a corner chip.
 -->
 @if (install.visible()) {
-  @if (install.collapsed()) {
+  @if (compactInstall()) {
     <button
       id="install-chip"
       class="install-chip"
-      (click)="install.expand()"
+      [disabled]="install.busy()"
+      (click)="install.install()"
       aria-label="Install Ship Duel"
     >
       <svg
@@ -73,10 +75,7 @@
         <path d="M7.5 10.5 12 15l4.5-4.5" />
         <path d="M4.5 19.5h15" />
       </svg>
-      <span class="install-copy">
-        <strong>Install Ship Duel</strong>
-        <small>Add it to your home screen.</small>
-      </span>
+      <span class="install-copy">Install Ship Duel</span>
       <button
         id="install-btn"
         class="install-action"

@@ -170,16 +170,16 @@ export class InstallService {
     }
   }
 
-  /** Shrink to the corner chip — the offer stays reachable on every screen. */
+  /**
+   * Put the bar away for good — the offer lives on as the corner chip, which
+   * installs in one tap just as the bar's button does. Nothing brings the bar
+   * back; a player who has said "not like that" once should not have to say it
+   * again on the next screen.
+   */
   collapse(): void {
     this.collapsed.set(true);
     this.sheetOpen.set(false);
     safe(() => localStorage.setItem(COLLAPSED_KEY, '1'), undefined);
-  }
-
-  expand(): void {
-    this.collapsed.set(false);
-    safe(() => localStorage.removeItem(COLLAPSED_KEY), undefined);
   }
 
   closeSheet(): void {

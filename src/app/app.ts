@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, computed, inject } from '@angular/core';
 import { Game } from './game/game';
 import { Lobby } from './lobby/lobby';
 import { GdAdsService } from './game/gd-ads.service';
@@ -24,7 +24,7 @@ export class App {
   private readonly ads = inject(GdAdsService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.39';
+  protected readonly version = 'v0.40';
 
   constructor() {
     // No-op unless we are inside GameDistribution's iframe.
@@ -41,4 +41,11 @@ export class App {
 
   protected readonly inGame = () =>
     this.session.state() === 'playing' || this.session.state() === 'disconnected';
+
+  /**
+   * In a game the offer shrinks to a corner chip: the boards are the screen,
+   * and every row the bar takes is a row of ocean the player loses. The lobby
+   * has room to spare, so there it stays a bar — unless the player put it away.
+   */
+  protected readonly compactInstall = computed(() => this.install.collapsed() || this.inGame());
 }

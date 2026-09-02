@@ -132,10 +132,12 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   browser's own route (`route()`: iOS Share sheet, an in-app browser that must be escaped
   first — invites arrive through exactly those — or the browser menu). Silent once
   `display-mode: standalone` (or `navigator.standalone`) says we are installed, and inside the
-  GD portal iframe. The bar takes a strip at the bottom that both screens reserve via
+  GD portal iframe. It takes a strip at the bottom that both screens reserve via
   `--install-strip` (set in `app.scss`); it never floats over the fleet board, where it would
-  eat taps meant for the last row of cells. Dismissing shrinks it to a corner chip
-  (remembered in `localStorage`) rather than hiding it. Dev builds expose
+  eat taps meant for the last row of cells. **In a game it is only a corner chip** — one slim
+  line of lobby is cheap, a bar across the board is not — and the same chip replaces the bar
+  everywhere once the player dismisses it (remembered in `localStorage`; nothing brings the
+  bar back). The chip installs in one tap, exactly like the bar's button. Dev builds expose
   `__battleshipInstall()`.
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.

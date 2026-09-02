@@ -126,14 +126,9 @@ describe('InstallService', () => {
     // take it away.
     expect(install.visible()).toBe(true);
 
+    // And it stays put away on the next screen, and the next launch.
     TestBed.resetTestingModule();
     expect(TestBed.inject(InstallService).collapsed()).toBe(true);
-
-    const reopened = TestBed.inject(InstallService);
-    reopened.expand();
-    expect(reopened.collapsed()).toBe(false);
-    TestBed.resetTestingModule();
-    expect(TestBed.inject(InstallService).collapsed()).toBe(false);
   });
 
   it('stands down when the app is installed from the browser menu', () => {
