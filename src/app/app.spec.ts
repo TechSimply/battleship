@@ -25,4 +25,16 @@ describe('App', () => {
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('h1')?.textContent).toContain('Ship Duel');
   });
+
+  it('offers the install prompt alongside whichever screen is up', async () => {
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const compiled = fixture.nativeElement as HTMLElement;
+    // Not in the lobby's template: a player who arrived on an invite link goes
+    // straight to the game and would otherwise never be offered the app.
+    // Class, not id: earlier tests' fixtures are still in the document with the
+    // same ids, and an id selector finds those first.
+    expect(compiled.querySelector('.install-bar')).toBeTruthy();
+    expect(compiled.querySelector('.install-action')?.textContent).toContain('Install');
+  });
 });

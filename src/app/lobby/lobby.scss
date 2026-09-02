@@ -14,7 +14,10 @@ $panel-border: rgba(96, 160, 210, 0.22);
   max-width: 460px;
   min-height: 100dvh;
   margin: 0 auto;
-  padding: 4rem 1.25rem 2rem;
+  // The bottom padding clears the install strip when the app offers itself for
+  // installation (`--install-strip`, set in app.scss), so the bar never covers
+  // the last button of the menu.
+  padding: 4rem 1.25rem max(2rem, var(--install-strip, 0px));
   display: flex;
   flex-direction: column;
   align-items: stretch;

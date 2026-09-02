@@ -123,6 +123,20 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   shows a "New version ready" pill. It is held back while `inGame()`, since reloading drops
   the peer connection and the round with it. Dev builds expose `__battleshipUpdate()` to
   raise the banner (the worker is disabled outside production).
+- `src/app/install.service.ts` — offers the app for installation on *every* screen until it
+  is installed. A player who arrives on an invite link goes straight into a game and may never
+  see the lobby, so the offer lives in `app.html` (lobby and game alike), not in the lobby.
+  Chrome fires `beforeinstallprompt` once and only a *cancelled* one stays replayable — hence
+  the pre-bootstrap catch in `main.ts` that parks it in `__battleshipInstallEvent` for the
+  service to pick up. Where there is no such event the Install button opens a sheet with that
+  browser's own route (`route()`: iOS Share sheet, an in-app browser that must be escaped
+  first — invites arrive through exactly those — or the browser menu). Silent once
+  `display-mode: standalone` (or `navigator.standalone`) says we are installed, and inside the
+  GD portal iframe. The bar takes a strip at the bottom that both screens reserve via
+  `--install-strip` (set in `app.scss`); it never floats over the fleet board, where it would
+  eat taps meant for the last row of cells. Dismissing shrinks it to a corner chip
+  (remembered in `localStorage`) rather than hiding it. Dev builds expose
+  `__battleshipInstall()`.
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.
 

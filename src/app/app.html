@@ -25,3 +25,121 @@
 } @else {
   <app-lobby />
 }
+
+<!--
+  The install offer, on every screen until the app is installed. A player who
+  arrived through an invite link may never see the lobby, so this cannot live
+  there. It sits in its own strip at the bottom that both screens reserve
+  (`--install-strip` below), rather than floating over the fleet board where it
+  would eat taps meant for the last row of cells.
+-->
+@if (install.visible()) {
+  @if (install.collapsed()) {
+    <button
+      id="install-chip"
+      class="install-chip"
+      (click)="install.expand()"
+      aria-label="Install Ship Duel"
+    >
+      <svg
+        class="install-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 3v11" />
+        <path d="M7.5 10.5 12 15l4.5-4.5" />
+        <path d="M4.5 19.5h15" />
+      </svg>
+      Install
+    </button>
+  } @else {
+    <div id="install-bar" class="install-bar" role="region" aria-label="Install Ship Duel">
+      <svg
+        class="install-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 3v11" />
+        <path d="M7.5 10.5 12 15l4.5-4.5" />
+        <path d="M4.5 19.5h15" />
+      </svg>
+      <span class="install-copy">
+        <strong>Install Ship Duel</strong>
+        <small>Add it to your home screen.</small>
+      </span>
+      <button
+        id="install-btn"
+        class="install-action"
+        [disabled]="install.busy()"
+        (click)="install.install()"
+      >
+        Install
+      </button>
+      <button
+        id="install-collapse-btn"
+        class="install-collapse"
+        (click)="install.collapse()"
+        aria-label="Hide the install bar"
+      >
+        ×
+      </button>
+    </div>
+  }
+}
+
+<!--
+  What the Install button falls back to wherever the browser has no install
+  event of its own: iOS (Share sheet), an in-app browser (no install at all
+  until the page is reopened in a real browser) and everything else (menu).
+-->
+@if (install.sheetOpen()) {
+  <div
+    id="install-sheet"
+    class="install-sheet"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="install-sheet-title"
+    (click)="install.closeSheet()"
+  >
+    <div class="install-card" (click)="$event.stopPropagation()">
+      <h2 id="install-sheet-title">Install Ship Duel</h2>
+      @switch (install.route()) {
+        @case ('ios') {
+          <ol class="install-steps">
+            <li>Tap <strong>Share</strong> in Safari's toolbar.</li>
+            <li>Scroll to <strong>Add to Home Screen</strong>.</li>
+            <li>Tap <strong>Add</strong>.</li>
+          </ol>
+        }
+        @case ('webview') {
+          <p class="install-note">This app-in-app browser can't install anything.</p>
+          <ol class="install-steps">
+            <li>Open the menu (<strong>⋯</strong>) in the corner.</li>
+            <li>Choose <strong>Open in browser</strong> — Safari on iPhone, Chrome on Android.</li>
+            <li>Tap <strong>Install</strong> there.</li>
+          </ol>
+        }
+        @default {
+          <ol class="install-steps">
+            <li>Open your browser's menu (<strong>⋮</strong>).</li>
+            <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+            <li>Confirm.</li>
+          </ol>
+        }
+      }
+      <button id="install-sheet-close" class="install-action wide" (click)="install.closeSheet()">
+        Got it
+      </button>
+    </div>
+  </div>
+}

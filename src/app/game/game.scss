@@ -39,8 +39,13 @@ $expose-amber: #ffc457;
   gap: 0.45em;
   max-width: 720px;
   margin-inline: auto;
+  // The bottom padding is the larger of our own inset and `--install-strip`
+  // (set by app.scss, and already counting the safe-area inset itself): while
+  // the install offer is on screen it owns that strip, and the boards are fitted
+  // into what is left rather than being covered by it.
   padding: calc(env(safe-area-inset-top, 0px) + 0.35rem)
-    calc(env(safe-area-inset-right, 0px) + 0.6rem) calc(env(safe-area-inset-bottom, 0px) + 0.5rem)
+    calc(env(safe-area-inset-right, 0px) + 0.6rem)
+    max(calc(env(safe-area-inset-bottom, 0px) + 0.5rem), var(--install-strip, 0px))
     calc(env(safe-area-inset-left, 0px) + 0.6rem);
   overflow: hidden;
   overscroll-behavior: none;
