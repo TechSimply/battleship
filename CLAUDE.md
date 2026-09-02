@@ -44,12 +44,33 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   the link from a messaging app, which puts their PWA to sleep and takes `Battle{n}` off the
   broker with it, and player 2 opens the link during exactly that gap. A single dial answered
   with `peer-unavailable` therefore means "asleep", not "gone", and failing on it made every
-  invite land on "Game over — opponent left". `dialHost()` now re-dials every 2s for
-  `JOIN_WINDOW_MS` (the host re-registers the moment they look at their screen), knocks carry
-  a generation number so a superseded dial's timeout cannot tear down the one that got
-  through, and only two things end it early: the window running out, or `registry.isAlive()`
-  answering a definite `false` (a Firebase that is merely unreachable must never downgrade a
-  live game to "opponent left"). `session.waitingForHost` tells the lobby to say so.
+  invite land on "Game over — opponent left". `dialHost()` now re-dials every 2s (the host
+  re-registers the moment they look at their screen), knocks carry a generation number so a
+  superseded dial's timeout cannot tear down the one that got through, and how long the
+  knocking lasts is decided by the registry, not a stopwatch: `watchHostLink()` asks
+  `registry.isHostAlive()` every 8s and pushes the deadline back to `JOIN_WINDOW_MS` on every
+  yes, up to a hard `MAX_JOIN_WINDOW_MS` of 5 minutes. Only a definite `false` ends it early
+  (a Firebase that is merely unreachable must never downgrade a live game to "opponent left").
+  A fixed 60s window was too short for the case below — a host whose app was *killed* needs a
+  relaunch, not a glance. `session.waitingForHost` tells the lobby to say so; the joiner also
+  heartbeats its own presence once it knows the link is real, which is what lets the hosting
+  screen say "They're on the link" (`session.joinerWaiting`) and keeps the link reclaimable
+  for player 1 while someone is actually waiting on it.
+  **A killed host re-takes its number on the next launch.** Freezing a backgrounded tab is
+  one thing; a phone may instead *kill* an installed PWA outright — which is exactly what can
+  happen while the host is in a messaging app sending the invite. Player 1 then cold-boots
+  into the lobby with no peer and no number, "New Game" would hand them a different one, and
+  the friend staring at "Still knocking" could not be reached by anything player 1 did. So
+  `hostWithId()` writes the number to `localStorage` (refreshed on every visibility change,
+  since the write before hiding is the one that survives the kill) and `resumeHostedLink()`
+  — called by `app.ts` on any load without a `?join=` param, and by `join()` when the number
+  typed/opened is our own — reclaims the seat in Firebase and hosts the *same* `Battle{n}`
+  again. It is only ever offered for a link that never paired: once a game has started its
+  state lives in the two browsers and still cannot be resumed. The memory is dropped as soon
+  as the link pairs up or the player leaves.
+  **Cancel is not Leave.** A joiner whose knock never got through does not hold the link, so
+  `leave()` only `terminate()`s from `hosting` / `playing` / `disconnected` — cancelling a
+  join used to delete the host's record, killing the game for its owner too.
   **There is deliberately no reconnect/resume.** Losing the data channel — closing the tab,
   quitting the PWA, a network drop — ends the game: both sides go to `disconnected` and must
   start a new one. An earlier version tried to resume by replaying missed actions, but the
@@ -82,7 +103,13 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   keep it alive, `isSessionAlive()` applies the rule 9.2 TTLs (2 min never-paired / 5 min once
   paired, measured from the newest heartbeat), and `terminate()` deletes the record on Leave so
   the number is reusable. `isPartyPresent()` drives `session.opponentPresent`, which tells a
-  player their opponent closed the app. Gameplay never goes through Firebase. If Firebase is
+  player their opponent closed the app. `reclaimHost()` is how a relaunched player 1 gets its
+  seat back (rule 9's "the one who created the link is player1 … when they return they should
+  represent respective player number"); it refuses a link that has paired, because that game
+  cannot be resumed. `isHostReachable()` is deliberately *not* `isSessionAlive()`: a knocking
+  player 2 heartbeats itself onto the record, and a joiner that read its own presence as proof
+  of life would knock on an abandoned link forever — so it dates the link by the host's own
+  last beat, with the occupied window while a player 2 waits. Gameplay never goes through Firebase. If Firebase is
   unreachable the app degrades to a PeerJS-only claim. Note `reclaim()` must do an explicit
   `get()` then `update()` — a `runTransaction` sees `null` on a cold page load and aborts
   without ever reaching the server.

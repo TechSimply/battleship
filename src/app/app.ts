@@ -24,7 +24,7 @@ export class App {
   private readonly ads = inject(GdAdsService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.40';
+  protected readonly version = 'v0.41';
 
   constructor() {
     // No-op unless we are inside GameDistribution's iframe.
@@ -36,6 +36,12 @@ export class App {
     if (join !== null) {
       history.replaceState(null, '', location.pathname);
       this.session.join(join);
+    } else {
+      // Rule 9: a host whose phone killed the PWA (which is exactly what can
+      // happen while they are in a messaging app sending the invite) comes
+      // straight back onto the number they shared, so the link already sent
+      // starts working instead of leaving player 2 knocking at nobody.
+      void this.session.resumeHostedLink();
     }
   }
 

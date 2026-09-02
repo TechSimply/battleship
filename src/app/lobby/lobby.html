@@ -17,9 +17,18 @@
           <button id="copy-btn" class="btn secondary" (click)="copy()">
             {{ copied() === 'id' ? 'Copied!' : 'Copy game id' }}
           </button>
-          <p id="host-waiting" class="waiting">
-            Waiting for opponent<span id="host-waiting-dots" class="dots"></span>
-          </p>
+          <!-- Player 2 announces themselves on the link while they knock, so
+               a host who has just come back can be told their friend is
+               already there rather than watching the same "waiting" line. -->
+          @if (session.joinerWaiting()) {
+            <p id="host-joiner-waiting" class="waiting">
+              They’re on the link — connecting<span class="dots"></span>
+            </p>
+          } @else {
+            <p id="host-waiting" class="waiting">
+              Waiting for opponent<span id="host-waiting-dots" class="dots"></span>
+            </p>
+          }
         } @else {
           <p id="creating-waiting" class="waiting">
             Creating game<span id="creating-waiting-dots" class="dots"></span>

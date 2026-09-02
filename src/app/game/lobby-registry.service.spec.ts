@@ -1,4 +1,9 @@
-import { isPartyPresent, isSessionAlive, SessionRecord } from './lobby-registry.service';
+import {
+  isHostReachable,
+  isPartyPresent,
+  isSessionAlive,
+  SessionRecord,
+} from './lobby-registry.service';
 
 /** Rule 9.2 link lifetimes, mirrored from the service for readable tests. */
 const MIN = 60_000;
@@ -75,6 +80,45 @@ describe('a closed game stays reclaimable for its TTL', () => {
       joined: true,
     });
     expect(isSessionAlive(abandoned, now)).toBe(false);
+  });
+});
+
+/**
+ * What a knocking player 2 asks before giving up. It must not be answered by
+ * player 2's own heartbeat — they announce themselves on the link while they
+ * wait (so it stays reclaimable for a host who is relaunching), and a joiner
+ * that took its own presence as proof of life would knock on an abandoned link
+ * until the hard cap.
+ */
+describe('isHostReachable (is player 1 still coming?)', () => {
+  it('a host who is on the link is reachable', () => {
+    expect(isHostReachable(rec({ hostAt: now }), now)).toBe(true);
+  });
+
+  it('a host who has just closed the app still has their window', () => {
+    const away = rec({ createdAt: now - 2 * MIN, hostAt: now - 1 * MIN });
+    expect(isHostReachable(away, now)).toBe(true);
+  });
+
+  it('a host gone longer than the link lives is not', () => {
+    const gone = rec({ createdAt: now - 4 * MIN, hostAt: now - 3 * MIN });
+    expect(isHostReachable(gone, now)).toBe(false);
+  });
+
+  it('gives a host longer while a player 2 is waiting on the link (rule 9.2)', () => {
+    const waitedFor = rec({ createdAt: now - 4 * MIN, hostAt: now - 3 * MIN, joinerAt: now });
+    expect(isHostReachable(waitedFor, now)).toBe(true);
+  });
+
+  it('is not kept true forever by the waiting joiner’s own heartbeat', () => {
+    const abandoned = rec({ createdAt: now - 9 * MIN, hostAt: now - 9 * MIN, joinerAt: now });
+    expect(isSessionAlive(abandoned, now)).toBe(true); // someone is on the link…
+    expect(isHostReachable(abandoned, now)).toBe(false); // …but it isn't the host
+  });
+
+  it('a terminated or missing link is never reachable', () => {
+    expect(isHostReachable(rec({ hostAt: now, terminated: true }), now)).toBe(false);
+    expect(isHostReachable(null, now)).toBe(false);
   });
 });
 

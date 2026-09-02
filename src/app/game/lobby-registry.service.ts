@@ -99,6 +99,28 @@ export function isPartyPresent(
   return !!ts && now - ts < PRESENCE_TTL_MS;
 }
 
+/**
+ * Is the host still within reach — i.e. is knocking on this number worth it?
+ *
+ * Deliberately *not* `isSessionAlive`: a knocking player 2 heartbeats its own
+ * presence into the record (so the link stays reclaimable for the host while
+ * someone is actually waiting on it), and a joiner that counted its own
+ * heartbeat as proof of life would knock on an abandoned link forever. So this
+ * dates the link by the host's own last heartbeat, and gives them rule 9.2's
+ * window from it to come back.
+ */
+export function isHostReachable(rec: SessionRecord | null, now: number): boolean {
+  if (!rec || rec.terminated) return false;
+  if (isPartyPresent(rec, 'host', now)) return true;
+  // Rule 9.2: "if one of the players is on the link and other left,
+  // stale_occupied applies" — a player 2 sitting on the link waiting is one of
+  // the players on it, so player 1 gets the long window to come back, not the
+  // short one meant for a link nobody is at.
+  const occupied = rec.joined || isPartyPresent(rec, 'joiner', now);
+  const window = occupied ? STALE_OCCUPIED_MS : STALE_UNOCCUPIED_MS;
+  return now - Math.max(rec.hostAt ?? 0, rec.createdAt ?? 0) <= window;
+}
+
 @Injectable({ providedIn: 'root' })
 export class LobbyRegistryService {
   private _db: Database | null = null;
@@ -156,6 +178,15 @@ export class LobbyRegistryService {
   }
 
   /**
+   * Rule 9: is the host of Battle{n} still within their window to come back?
+   * This is the question a knocking player 2 needs answered — see
+   * `isHostReachable` for why it is not the same as "is the link alive".
+   */
+  async isHostAlive(n: number): Promise<boolean> {
+    return isHostReachable(await this.read(n), this.now());
+  }
+
+  /**
    * Reserve Battle{n} as the host. Atomic: fails if a live session already
    * holds it (so two hosts can't claim the same number), succeeds if the slot
    * is free or an expired/abandoned shell we can overwrite. (A leftover
@@ -181,20 +212,27 @@ export class LobbyRegistryService {
   }
 
   /**
-   * A host or joiner returning to a link it already owns: refresh its presence
-   * on the existing record. Fails if the link has since died/terminated.
+   * Rule 9: player 1 relaunching the app re-takes seat 0 on the link they
+   * created — "the one who created the link is player1 … when they return they
+   * should represent respective player number". Only for a link nobody has
+   * paired with yet: once a game has actually started its state lives in the
+   * two browsers, and there is deliberately no way to resume that (see the
+   * session service header), so a paired link is not re-hostable.
+   *
+   * Fails (and the caller falls back to the lobby) if the link died, was
+   * terminated, already paired up, or Firebase can't be reached — in which case
+   * we cannot know the number is still ours, so we must not take it.
    */
-  async reclaim(n: number, role: SessionRole): Promise<boolean> {
+  async reclaimHost(n: number): Promise<boolean> {
     // Read-then-write rather than a transaction: on a fresh page load (exactly
     // the reopen case) the client has no cached value, and a transaction that
-    // aborts on the initial null never reaches the server — so reclaim would
-    // always fail. get() forces a server read; there's no real contention here
-    // (only the returning owner reclaims its own seat).
+    // aborts on the initial null never reaches the server — so the reclaim
+    // would always fail. get() forces a server read; there's no real contention
+    // here (only the returning owner reclaims its own seat).
     const rec = await this.read(n);
-    if (!isSessionAlive(rec, this.now())) return false;
-    const field = role === 'host' ? 'hostAt' : 'joinerAt';
+    if (!isSessionAlive(rec, this.now()) || rec?.joined) return false;
     try {
-      await update(this.sessionRef(n), { [field]: serverTimestamp() });
+      await update(this.sessionRef(n), { hostAt: serverTimestamp() });
       return true;
     } catch {
       return false;

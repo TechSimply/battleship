@@ -136,13 +136,22 @@ vi.mock('peerjs', () => ({ default: FakePeer }));
 /** Firebase is not reachable under test; hand back a claim that always works. */
 class FakeRegistry {
   presence: number | null = null;
+  presenceRole: string | null = null;
   terminated: number[] = [];
   claim = vi.fn(async (n: number) => n > 0);
   isAlive = vi.fn(async () => true);
+  isHostAlive = vi.fn(async () => true);
+  reclaimHost = vi.fn(async () => true);
   markJoined = vi.fn(async () => {});
   terminate = vi.fn(async (n: number) => void this.terminated.push(n));
-  startPresence = vi.fn((n: number) => void (this.presence = n));
-  stopPresence = vi.fn(() => void (this.presence = null));
+  startPresence = vi.fn((n: number, role: string) => {
+    this.presence = n;
+    this.presenceRole = role;
+  });
+  stopPresence = vi.fn(() => {
+    this.presence = null;
+    this.presenceRole = null;
+  });
   observe = vi.fn(() => () => {});
   serverNow = vi.fn(() => Date.now());
   bump = vi.fn();
@@ -159,6 +168,7 @@ describe('a backgrounded host keeps its game', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     FakePeer.instances = [];
+    localStorage.clear(); // no link remembered from a previous test
     registry = new FakeRegistry();
     TestBed.configureTestingModule({
       providers: [SessionService, { provide: LobbyRegistryService, useValue: registry }],
@@ -324,7 +334,7 @@ describe('a backgrounded host keeps its game', () => {
 
   it('gives up once the join window really has run out', async () => {
     const peer = await openTheLink();
-    for (let i = 0; i < 60 && session.state() === 'joining'; i++) {
+    for (let i = 0; i < 120 && session.state() === 'joining'; i++) {
       const p = FakePeer.instances.at(-1)!;
       if (p.dials.length) p.peerUnavailable();
       await vi.advanceTimersByTimeAsync(3_000);
@@ -334,21 +344,48 @@ describe('a backgrounded host keeps its game', () => {
     expect(peer.dials.length).toBeGreaterThan(1); // it did keep trying
   });
 
+  it('waits out a host who is relaunching, not just one who is asleep', async () => {
+    // A phone that killed the PWA takes longer to come back than a phone that
+    // merely froze the tab. As long as the registry says the host is still
+    // within their window, the knocking goes on — giving up at 60s stranded
+    // player 2 at exactly the moment player 1 was reopening the app.
+    const peer = await openTheLink();
+    for (let i = 0; i < 30; i++) {
+      FakePeer.instances.at(-1)!.peerUnavailable();
+      await vi.advanceTimersByTimeAsync(3_000);
+    }
+    expect(session.state()).toBe('joining'); // 90s in and still knocking
+
+    FakePeer.instances.at(-1)!.dials.at(-1)!.accept(); // player 1 is back
+    expect(session.state()).toBe('playing');
+  });
+
+  it('tells the host someone is on the link while they knock', async () => {
+    // The joiner heartbeats its own presence once it knows the link is real —
+    // that is what keeps the link reclaimable for a host who is relaunching,
+    // and what lets the hosting screen say "they're on the link".
+    await openTheLink();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(registry.presence).toBe(4242);
+    expect(registry.presenceRole).toBe('joiner');
+  });
+
   it('believes the registry when the number was never a game', async () => {
     // A mistyped id should not cost the player a minute of knocking.
-    registry.isAlive = vi.fn(async () => false);
+    registry.isHostAlive = vi.fn(async () => false);
     const peer = await openTheLink();
     peer.peerUnavailable();
     await vi.advanceTimersByTimeAsync(100);
 
     expect(session.state()).toBe('error');
     expect(session.errorMsg()).toMatch(/opponent left/i);
+    expect(registry.presence).toBeNull(); // and we left no junk record behind
   });
 
   it('keeps knocking when the registry itself is unreachable', async () => {
     // Firebase being down must never turn a live game into "opponent left" —
     // gameplay does not go through it.
-    registry.isAlive = vi.fn(async () => {
+    registry.isHostAlive = vi.fn(async () => {
       throw new Error('offline');
     });
     const peer = await openTheLink();
@@ -357,6 +394,98 @@ describe('a backgrounded host keeps its game', () => {
 
     expect(session.state()).toBe('joining');
     expect(peer.dials.length).toBe(2);
+  });
+
+  it('does not kill the host’s link when player 2 cancels a knock', async () => {
+    // Cancel is not the in-game Leave button: the joiner never held this link,
+    // and deleting the record left player 1 hosting a number that everyone
+    // else — player 2 included, on their next try — reads as "game over".
+    await openTheLink();
+    session.leave();
+
+    expect(registry.terminate).not.toHaveBeenCalled();
+    expect(session.state()).toBe('lobby');
+  });
+});
+
+describe('a host whose app was killed comes back to the same link', () => {
+  let session: SessionServiceType;
+  let registry: FakeRegistry;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakePeer.instances = [];
+    localStorage.clear();
+    registry = new FakeRegistry();
+    TestBed.configureTestingModule({
+      providers: [SessionService, { provide: LobbyRegistryService, useValue: registry }],
+    });
+    session = TestBed.inject(SessionService);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Host a game, then throw the whole session away as a killed app would. */
+  async function hostThenDie(): Promise<string> {
+    session.newGame();
+    await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
+    FakePeer.instances.at(-1)!.reachBroker();
+    const id = session.gameId()!;
+    // A cold boot: a brand-new service, with only localStorage carried over.
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [SessionService, { provide: LobbyRegistryService, useValue: registry }],
+    });
+    session = TestBed.inject(SessionService);
+    FakePeer.instances = [];
+    return id;
+  }
+
+  it('re-takes the number it shared, so the invite still works', async () => {
+    const id = await hostThenDie();
+    expect(session.state()).toBe('lobby');
+
+    await session.resumeHostedLink();
+    await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
+    FakePeer.instances.at(-1)!.reachBroker();
+
+    expect(session.state()).toBe('hosting');
+    expect(session.gameId()).toBe(id); // the same number that is in the chat
+    expect(registry.reclaimHost).toHaveBeenCalledWith(Number(id));
+  });
+
+  it('falls back to the lobby when the link has expired or paired up', async () => {
+    await hostThenDie();
+    registry.reclaimHost = vi.fn(async () => false);
+
+    expect(await session.resumeHostedLink()).toBe(false);
+    expect(session.state()).toBe('lobby');
+    expect(session.gameId()).toBeNull();
+  });
+
+  it('re-hosts rather than dialling itself when player 1 opens their own link', async () => {
+    const id = await hostThenDie();
+
+    session.join(id); // tapped the invite link they sent
+    await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
+    const peer = FakePeer.instances.at(-1)!;
+    peer.reachBroker();
+
+    expect(session.state()).toBe('hosting'); // not 'joining' — it is their game
+    expect(peer.dials.length).toBe(0); // and nobody knocked on themselves
+    expect(session.gameId()).toBe(id);
+  });
+
+  it('forgets a link the player deliberately left', async () => {
+    session.newGame();
+    await vi.waitFor(() => expect(FakePeer.instances.length).toBeGreaterThan(0));
+    FakePeer.instances.at(-1)!.reachBroker();
+    session.leave();
+
+    expect(await session.resumeHostedLink()).toBe(false);
+    expect(session.state()).toBe('lobby');
   });
 
   it('still reports a connection that never comes up at all', async () => {

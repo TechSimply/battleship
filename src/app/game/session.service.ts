@@ -1,4 +1,4 @@
-import { Injectable, effect, inject, isDevMode, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, isDevMode, signal } from '@angular/core';
 import Peer, { DataConnection } from 'peerjs';
 import { BOARD_H, BOARD_W, GameAction, GameService, PlayerId } from './game.service';
 import { GdAdsService } from './gd-ads.service';
@@ -24,6 +24,18 @@ import { LobbyRegistryService, SessionRecord, SessionRole, isPartyPresent } from
  * foreground triggers an immediate broker re-register (so Battle{n} is
  * reclaimed at once while waiting for player 2), and a screen wake lock is held
  * for the duration of a live game to make the OS less eager to suspend the tab.
+ *
+ * That covers a tab that is merely frozen. A phone may instead *kill* an
+ * installed PWA it has kept in the background — the host sends the invite, the
+ * OS reclaims the app, and player 1 comes back to a cold boot with no peer, no
+ * number and no way to answer the friend who is knocking on the link they were
+ * sent ("Still knocking — ask them to open Ship Duel"). Rule 9 says that link
+ * outlives the app and that a returning creator is still player 1, so the
+ * number claimed is written to `localStorage` and a cold boot re-takes it:
+ * `resumeHostedLink()` reclaims the seat in Firebase and hosts the *same*
+ * Battle{n} again, so the link already sent starts working the moment player 1
+ * opens the app. Only ever for a link that never paired up — once a game has
+ * begun its state lives in the two browsers and cannot be resumed at all.
  *
  * Getting back on the broker is a *session*-level job, not a peer-level one.
  * PeerJS reconnects the peer it has when it can, but it also aborts and
@@ -51,13 +63,28 @@ const MAX_CLAIM_ATTEMPTS = 50;
 /** Safety net for a handshake that stalls; an awake host answers in well under this. */
 const DIAL_TIMEOUT_MS = 5_000;
 /**
- * How long a joiner keeps knocking before calling the game gone. Long enough
- * to cover the usual shape of an invite: the host sends the link, their phone
- * puts the app to sleep, the friend opens it, and the host taps back in.
+ * How long a joiner keeps knocking on a host it has heard nothing about. Long
+ * enough to cover the usual shape of an invite: the host sends the link, their
+ * phone puts the app to sleep, the friend opens it, and the host taps back in.
+ * Refreshed on every registry answer that says the host is still within their
+ * window (rule 9.2), so a host whose phone killed the app has until the link
+ * itself expires to relaunch and be found — not sixty seconds.
  */
 const JOIN_WINDOW_MS = 60_000;
+/** However alive the link looks, stop knocking eventually. */
+const MAX_JOIN_WINDOW_MS = 5 * 60_000;
+/** How often the joiner re-asks the registry whether the host is coming. */
+const LINK_CHECK_MS = 8_000;
 /** Pause between knocks while the host's app is asleep. */
 const REDIAL_MS = 2_000;
+/**
+ * Where a host remembers the number it claimed, so a cold boot (the OS killed
+ * the PWA while it was backgrounded) can re-take it and answer the invite that
+ * is already out. One slot: a device hosts one link at a time.
+ */
+const HOSTED_LINK_KEY = 'battleship.hostedLink';
+/** Ignore a remembered link older than the longest life rule 9.2 gives one. */
+const HOSTED_LINK_TTL_MS = 5 * 60_000;
 /** Nobody is hosting that game any more — and it cannot be resumed. */
 const GAME_OVER_MSG = 'Game over — opponent left.';
 /**
@@ -122,7 +149,10 @@ export function peerErrorAction(
   recoverable: boolean,
   state: SessionState,
 ): PeerErrorAction {
-  if (type === 'peer-unavailable') return 'not-found';
+  // "No such peer" only means anything while we are dialling one. Arriving
+  // later it is the echo of a knock we have already moved on from, and letting
+  // it speak would overwrite whatever really ended the join.
+  if (type === 'peer-unavailable') return state === 'joining' ? 'not-found' : 'ignore';
   if (recoverable && RECOVERABLE_ERRORS.has(type)) return 'recover';
   return state === 'hosting' || state === 'joining' ? 'fail' : 'ignore';
 }
@@ -159,6 +189,24 @@ export function actionInOrder(seq: number, appliedSeq: number): boolean {
   return seq === appliedSeq + 1;
 }
 
+/**
+ * The number in a remembered hosted link, or null if there isn't a usable one:
+ * nothing stored, storage full of something else, or a link so old that rule
+ * 9.2 has certainly expired it. Pure so the "is this still worth re-taking"
+ * decision is testable without a browser.
+ */
+export function parseHostedLink(raw: string | null, now: number): number | null {
+  if (!raw) return null;
+  try {
+    const { n, at } = JSON.parse(raw) as { n?: unknown; at?: unknown };
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > MAX_GAME_ID) return null;
+    if (typeof at !== 'number' || !(now - at <= HOSTED_LINK_TTL_MS)) return null;
+    return n;
+  } catch {
+    return null; // not ours / not JSON
+  }
+}
+
 /** "Battle3", "battle 3" or plain "3" → 3; null when unparseable. */
 export function parseGameId(input: string): number | null {
   const m = input.trim().match(/^(?:battle\s*)?(\d{1,4})$/i);
@@ -191,6 +239,15 @@ export class SessionService {
    * watching a spinner that looks stuck.
    */
   readonly waitingForHost = signal(false);
+  /**
+   * Hosting, and someone is on the other end of the link right now (knocking,
+   * or heartbeating while they wait). The mirror image of `waitingForHost`: it
+   * tells player 1 their friend is already there, so the wait reads as "nearly
+   * connected" rather than "nobody came".
+   */
+  readonly joinerWaiting = computed(
+    () => this.state() === 'hosting' && this.opponentPresent() === true,
+  );
 
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
@@ -214,8 +271,12 @@ export class SessionService {
   private dialSeq = 0;
   /** When to stop knocking and call the game gone. */
   private joinDeadline = 0;
-  /** The registry is asked about the number once per join, not once per knock. */
-  private existenceChecked = false;
+  /** Hard end of the knocking, however alive the registry keeps saying it is. */
+  private joinLimit = 0;
+  /** Armed while joining: the slow "is the host still coming?" registry poll. */
+  private linkCheckTimer: ReturnType<typeof setInterval> | null = null;
+  /** Have we started heartbeating as the joiner on a link we know is real? */
+  private announcedOnLink = false;
   /**
    * Has *this session* ever been on the broker? Once it has, our Battle{n} is a
    * real reservation and every broker hiccup is worth riding out, however many
@@ -254,7 +315,15 @@ export class SessionService {
     // force an immediate re-register (rather than waiting out the throttled
     // retry timer) and re-take the wake lock the browser dropped on hide.
     if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => this.onVisible());
+      document.addEventListener('visibilitychange', () => {
+        // On the way *out* too: a phone kills a backgrounded PWA without
+        // further warning, so the last thing we write before hiding is what
+        // decides whether the next launch can re-take the number we shared.
+        if (this.state() === 'hosting' && this.gameNumber !== null) {
+          this.rememberHostedLink(this.gameNumber);
+        }
+        this.onVisible();
+      });
     }
 
     // Keep the screen (and thus this tab) alive while a game is live so a host
@@ -351,21 +420,29 @@ export class SessionService {
   }
 
   /**
-   * Rule 7.3: player 2 joins with the id player 1 shared. Exactly one attempt —
-   * a host who is there answers in well under a second, and if they are not the
-   * broker says so just as fast — but only if the host's phone is actually
-   * awake. Between sending an invite and the friend tapping it, the host has
-   * been sitting in a messaging app, and a suspended PWA holds no broker
-   * socket: its Battle{n} is simply not there to dial. One unanswered dial is
-   * therefore not a dead game, it is a sleeping one, so we keep knocking for
-   * `JOIN_WINDOW_MS` — the host re-registers the moment they look at their
-   * screen — and only call it over when the window runs out or the registry
-   * says the number was never live.
+   * Rule 7.3: player 2 joins with the id player 1 shared. A host who is there
+   * answers in well under a second — but only if their phone is actually awake.
+   * Between sending an invite and the friend tapping it, the host has been
+   * sitting in a messaging app, and a suspended PWA holds no broker socket: its
+   * Battle{n} is simply not there to dial. One unanswered dial is therefore not
+   * a dead game, it is a sleeping one (or an app the OS killed outright, which
+   * takes a relaunch to come back), so we knock every `REDIAL_MS` for as long
+   * as the registry says player 1 still has a window to return in — see
+   * `watchHostLink` — and only call it over when that answer turns to no, or
+   * the knocking hits `MAX_JOIN_WINDOW_MS`.
    */
   join(idText: string): void {
     const n = parseGameId(idText);
     if (n === null) {
       this.errorMsg.set('That doesn’t look like a game number — enter just the number, e.g. "1"');
+      return;
+    }
+    // Player 1 opening their own invite link (to check it, or because that is
+    // the only copy of the number they have) must not end up dialling
+    // themselves and knocking on a peer that can never answer. It is their
+    // link: re-take it.
+    if (this.hostedLink() === n) {
+      void this.resumeHostedLink();
       return;
     }
     this.errorMsg.set(null);
@@ -375,7 +452,114 @@ export class SessionService {
     this.gameNumber = n;
     this.gameId.set(`${n}`);
     this.joinDeadline = Date.now() + JOIN_WINDOW_MS;
+    this.joinLimit = Date.now() + MAX_JOIN_WINDOW_MS;
+    this.watchHostLink(n);
     this.connectToBroker(n);
+  }
+
+  /**
+   * Rule 9: re-take the link this device created. The number outlives the app
+   * in Firebase, so a player 1 whose phone killed the PWA — or who simply
+   * reopened it later — hosts the *same* Battle{n} again and the invite that is
+   * already in a chat starts working, instead of the friend knocking forever on
+   * a number nobody is listening to. Silently does nothing when there is no
+   * such link, when it has expired or been terminated, when someone already
+   * paired with it (a started game cannot be resumed), or when Firebase is
+   * unreachable and we therefore cannot know the number is still ours.
+   *
+   * Returns whether we are back on the link, so a caller can fall back to the
+   * lobby.
+   */
+  async resumeHostedLink(): Promise<boolean> {
+    const n = this.hostedLink();
+    const busy: SessionState[] = ['hosting', 'joining', 'playing'];
+    if (n === null || this.mode !== 'p2p' || busy.includes(this.state())) return false;
+    // Show the number straight away: this runs on a cold boot, and a blank
+    // second on a screen the player is staring at reads as a hang.
+    this.errorMsg.set(null);
+    this.resetRecovery();
+    this.state.set('hosting');
+    this.gameId.set(`${n}`);
+    if (!(await this.registry.reclaimHost(n))) {
+      this.forgetHostedLink();
+      if (this.state() === 'hosting') {
+        this.gameId.set(null);
+        this.state.set('lobby');
+      }
+      return false;
+    }
+    if (this.state() !== 'hosting') return false; // player moved on while we asked
+    this.hostWithId(n);
+    return true;
+  }
+
+  /** The number this device last hosted, if it is still worth re-taking. */
+  private hostedLink(): number | null {
+    try {
+      return parseHostedLink(localStorage.getItem(HOSTED_LINK_KEY), Date.now());
+    } catch {
+      return null; // storage blocked (private mode) — nothing remembered
+    }
+  }
+
+  private rememberHostedLink(n: number): void {
+    try {
+      localStorage.setItem(HOSTED_LINK_KEY, JSON.stringify({ n, at: Date.now() }));
+    } catch {
+      // storage blocked / full — we simply lose the cold-boot recovery
+    }
+  }
+
+  private forgetHostedLink(): void {
+    try {
+      localStorage.removeItem(HOSTED_LINK_KEY);
+    } catch {
+      // nothing to forget
+    }
+  }
+
+  /**
+   * Keep asking the registry whether the host is still within their window to
+   * come back (rule 9.2), and give them all of it. One check per join was
+   * enough while the only thing that kept a host away was a sleeping tab; a
+   * phone that *killed* the app takes longer than a minute to relaunch, and
+   * the joiner used to give up in the middle of it — the exact moment player 1
+   * had come back and had no way to be found. Only a definite "no" ends the
+   * join: Firebase being unreachable must never turn a live game into
+   * "opponent left" (gameplay does not go through it).
+   */
+  private watchHostLink(n: number): void {
+    if (this.linkCheckTimer) return;
+    const check = (): void => {
+      if (this.state() !== 'joining') return;
+      this.registry
+        .isHostAlive(n)
+        .then((alive) => {
+          if (this.state() !== 'joining') return;
+          if (!alive) {
+            this.fail(GAME_OVER_MSG);
+            return;
+          }
+          // The host is still theirs to come back to: reset the patience.
+          this.joinDeadline = Math.max(
+            this.joinDeadline,
+            Math.min(Date.now() + JOIN_WINDOW_MS, this.joinLimit),
+          );
+          // Announce ourselves on the link now that we know it is real — it
+          // tells player 1 someone is waiting, and keeps the link reclaimable
+          // for them while we knock. Never before the record exists, or we'd
+          // create a junk one on a number nobody ever hosted.
+          if (!this.announcedOnLink) {
+            this.announcedOnLink = true;
+            this.registry.startPresence(n, 'joiner');
+          }
+        })
+        .catch(() => {
+          // registry unreachable — keep knocking; PeerJS is the source of truth
+        });
+    };
+    check();
+    this.linkCheckTimer = setInterval(check, LINK_CHECK_MS);
   }
 
   /**
@@ -432,8 +616,10 @@ export class SessionService {
    * The host did not pick up. Keep knocking until the join window runs out —
    * a host whose app is asleep comes back on the broker as soon as they look
    * at their screen, which is exactly when their friend tells them the link is
-   * open. The registry is the one thing that can say the game is genuinely
-   * gone, so ask it once and believe a definite "no".
+   * open, and a host whose app was killed outright re-takes the same number
+   * when they relaunch. `watchHostLink` keeps the window open for as long as
+   * the registry says that is still possible, and ends it the moment it says
+   * otherwise.
    */
   private hostNotAnswering(): void {
     if (this.state() !== 'joining' || this.gameNumber === null) return;
@@ -443,7 +629,6 @@ export class SessionService {
     }
     // Say what is happening: silence on this screen reads as a hang.
     this.waitingForHost.set(true);
-    this.checkGameStillExists(this.gameNumber);
     if (this.redialTimer) return;
     this.redialTimer = setTimeout(() => {
       this.redialTimer = null;
@@ -458,24 +643,6 @@ export class SessionService {
     const peer = this.peer;
     if (peer && !peer.destroyed && !peer.disconnected && peer.open) this.dialHost(peer, n);
     else this.connectToBroker(n);
-  }
-
-  /**
-   * Ask the registry once whether this number was ever a real game. Only a
-   * definite "no" ends the join: Firebase being unreachable must not turn a
-   * live game into "opponent left" (gameplay never depends on it).
-   */
-  private checkGameStillExists(n: number): void {
-    if (this.existenceChecked) return;
-    this.existenceChecked = true;
-    this.registry
-      .isAlive(n)
-      .then((alive) => {
-        if (!alive && this.state() === 'joining') this.fail(GAME_OVER_MSG);
-      })
-      .catch(() => {
-        // registry unreachable — keep knocking; PeerJS is the source of truth
-      });
   }
 
   /** Forward a local tap; applies it and mirrors it to the opponent. */
@@ -508,9 +675,18 @@ export class SessionService {
     } catch {
       // connection already gone — nothing to say goodbye to
     }
-    // Rule 9: pressing Leave terminates the link permanently. Do this before we
-    // null gameNumber below. (Bot/never-hosted sessions just stop presence.)
-    if (this.mode === 'p2p' && this.gameNumber !== null) void this.registry.terminate(this.gameNumber);
+    // Rule 9: pressing Leave terminates the link permanently. Only a link we
+    // actually hold, though — cancelling a knock that never got through must
+    // not delete the game player 1 is still hosting, which used to leave the
+    // link dead for everyone including its owner. (Bot sessions just stop
+    // presence.)
+    const held: SessionState[] = ['hosting', 'playing', 'disconnected'];
+    const holdsLink =
+      this.mode === 'p2p' && this.gameNumber !== null && held.includes(this.state());
+    // Whatever we were doing, we are done with the link we host: a relaunch
+    // must not drop the player back into a game they walked away from.
+    this.forgetHostedLink();
+    if (holdsLink) void this.registry.terminate(this.gameNumber!);
     else this.registry.stopPresence();
     this.stopWatchingOpponent();
     this.resetRecovery();
@@ -586,6 +762,13 @@ export class SessionService {
       this.gameId.set(`${n}`);
       // Hold the reservation while we wait for player 2.
       this.registry.startPresence(n, 'host');
+      // Remember it off-process too: if the OS kills this PWA while the player
+      // is in a messaging app sending the link, the next launch re-takes this
+      // number instead of stranding the invite.
+      this.rememberHostedLink(n);
+      // Watch the other seat so we can say "they're here" the moment player 2
+      // opens the link — they announce themselves while they knock.
+      this.watchOpponent(n, 'host');
     });
 
     this.wireHostConnections(peer);
@@ -633,7 +816,11 @@ export class SessionService {
     this.conn = conn; // before old.close() so its events read as superseded
     old?.close();
     this.myPlayer.set(me);
+    this.stopJoinWatch();
     this.waitingForHost.set(false);
+    // The link has paired: from here the game lives in these two browsers and
+    // cannot be resumed, so there is nothing left for a relaunch to re-take.
+    this.forgetHostedLink();
     this.sentSeq = 0;
     this.appliedSeq = 0;
     this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
@@ -901,6 +1088,14 @@ export class SessionService {
     this.peerRetryTimer = null;
     if (this.redialTimer) clearTimeout(this.redialTimer);
     this.redialTimer = null;
+    this.stopJoinWatch();
+  }
+
+  /** Stop asking after a host we are no longer joining. */
+  private stopJoinWatch(): void {
+    if (this.linkCheckTimer) clearInterval(this.linkCheckTimer);
+    this.linkCheckTimer = null;
+    this.announcedOnLink = false;
   }
 
   /** A new game starts with a clean recovery slate. */
@@ -911,7 +1106,7 @@ export class SessionService {
     this.reregisterTries = 0;
     this.dialSeq++; // orphan any dial still in flight from a previous attempt
     this.joinDeadline = 0;
-    this.existenceChecked = false;
+    this.joinLimit = 0;
     this.waitingForHost.set(false);
   }
 
