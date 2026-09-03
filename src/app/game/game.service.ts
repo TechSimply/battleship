@@ -287,6 +287,17 @@ export class GameService {
     this.updatePlayer(shooter, (p) => ({ ...p, exposedAt: p.ship ? { ...p.ship } : null }));
 
     // Rule 5.4: the shooter must move, if any usable square borders it.
+    // Boxed in — every bordering square a crater — it simply stays put and the
+    // turn passes. That is the harshest place to be on this board: `exposedAt`
+    // keeps pointing at the square it never left, so `possibleShipSquares()`
+    // narrows to that one square and the next shot cannot miss. Hiding the hint
+    // would not save it either — the rocket flies from the shooter's square and
+    // leaves its trail there, so the position is on screen anyway.
+    // Two consequences we know about and are leaving as they are for now:
+    // a stranded ship never moves, so a burning one stops losing its 10% a move
+    // (rule 6.3), and once it has been hit it stands on its own crater, which
+    // the guard at the top of this method makes an illegal target — untouchable
+    // at 50% for the rest of the round.
     if (this.legalMoves(shooter).length === 0) {
       this.endTurn();
     } else {
