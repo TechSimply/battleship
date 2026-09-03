@@ -65,8 +65,10 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   with `peer-unavailable` therefore means "asleep", not "gone", and failing on it made every
   invite land on "Game over — opponent left". `dialHost()` now re-dials every 2s (the host
   re-registers the moment they look at their screen), knocks carry a generation number so a
-  superseded dial's timeout cannot tear down the one that got through, and how long the
-  knocking lasts is decided by the registry, not a stopwatch: `watchHostLink()` asks
+  superseded dial's timeout or error cannot tear down the one that got through — but a knock
+  that *opens* is never refused, whatever its generation (see "A knock that gets through is
+  never thrown away"), and how long the knocking lasts is decided by the registry, not a
+  stopwatch: `watchHostLink()` asks
   `registry.isHostAlive()` every 8s and pushes the deadline back to `JOIN_WINDOW_MS` on every
   yes, up to a hard `MAX_JOIN_WINDOW_MS` of 5 minutes. Only a definite `false` ends it early
   (a Firebase that is merely unreachable must never downgrade a live game to "opponent left").
@@ -87,6 +89,30 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   again. It is only ever offered for a link that never paired: once a game has started its
   state lives in the two browsers and still cannot be resumed. The memory is dropped as soon
   as the link pairs up or the player leaves.
+  **A knock that gets through is never thrown away.** The two screens that used to stick
+  forever — player 1 on "Waiting for opponent", player 2 on "Still knocking", with no error
+  anywhere — were one bug. When the host is not on the broker, PeerJS *server* queues the
+  offer and answers `peer-unavailable` about five seconds later, and that answer names no
+  connection: it may well belong to a knock we have already replaced. Retiring the knock in
+  flight on the strength of it (`dialSeq++` in the error handler) meant hanging up on a host
+  who picked up at that moment — and since their side had opened, leaving them parked in a
+  game with nobody in it, refusing every knock that followed as "game full". So `dialHost()`
+  accepts any channel that opens while we are still looking for a host, `DIAL_TIMEOUT_MS` is
+  9s so the broker's own answer lands first, and a pairing must prove itself: both sides send
+  `hello` on attach and `abandonPairing()` drops one that says nothing within
+  `PAIRING_TIMEOUT_MS` — host back to `hosting`, joiner back to knocking. `markJoined()` and
+  `forgetHostedLink()` moved to `confirmPairing()` for the same reason: a ghost must not mark
+  the link occupied (which would block `reclaimHost()`) or cost player 1 their cold-boot
+  recovery.
+  **A socket can die without PeerJS noticing.** A frozen webview hands back a socket that
+  reads as open and carries nothing. Nothing errors, so none of the recovery above runs.
+  Both ends now spot it by other means. The joiner counts knocks that got *no* answer at all
+  — the broker's "no such peer" proves the socket works, silence is the symptom — and after
+  `MAX_SILENT_DIALS` `redial()` builds a fresh peer instead of knocking on a corpse. The host
+  uses the registry: player 2 heartbeats onto the link while knocking, so
+  `watchForSilentKnocks()` re-takes the number when someone has been demonstrably there for
+  `HOST_STALE_MS` and not one knock has arrived. Both are reset on `visibilitychange`, since
+  frozen timers have not been counting.
   **Cancel is not Leave.** A joiner whose knock never got through does not hold the link, so
   `leave()` only `terminate()`s from `hosting` / `playing` / `disconnected` — cancelling a
   join used to delete the host's record, killing the game for its owner too.
@@ -206,6 +232,13 @@ npx ng serve --port 4200                   # dev server
   (uses `actions/configure-pages` with `enablement: true` so Pages self-enables).
 
 ## Verifying changes
+
+`session.invite.spec.ts` runs the whole invite between **two real `SessionService`s** and a
+stand-in broker that behaves like the PeerJS one — it queues a connect to an id nobody holds
+and only answers `peer-unavailable` five seconds later, delivers a queued offer if the host
+registers inside that window, and can make the handshake crawl. That is what reproduces the
+knock-thrown-away and ghost-pairing wedges; assert a move *crossing*, not just that both sides
+say "playing", since two devices holding opposite ends of a dead channel say that too.
 
 Beyond unit tests, the two-device flow is verified end-to-end by driving two isolated browser
 contexts with **Playwright + system Edge** (`channel: 'msedge'`, headless works) against the dev
