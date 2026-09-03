@@ -8,13 +8,17 @@ its a battle shipt game p2p
 
 1. We have only two oposing ships
 2.1. The game board consists of 16 squars 4x4
-2.2. Two boards are positioned vertically one on top of another.
+2.2. There are two boards only for the placement (rule 4): each player picks the starting
+square of their ship on their own board, hidden from the other player.
+2.3. After both ships are placed the two boards become one: from then on there is a single
+united 4x4 board that both ships sail on, fire at and bomb. Same 16 squares for both.
 3. Ship occupies one square and can move to is bordering all 8 squars.
 4. In the begining of the game plaers choose where to position the ship (see 2. 3.), 
 the ships hould not be visible to the oposing player.
-5.1. Ship shold choose on what oposing players board to fire,
+5.1. A player fires at any still usable square of the united board (rule 2.3).
 5.2. When player fires he exposes the square from which it was fired
-5.3. Where the bomg is fired that square is not usable any more
+5.3. Where the bomb is fired that square is not usable any more - for either ship,
+the board is shared
 5.4. Player which fires should move per rules: 3. , 5.3.
 6. Ship health
 6.1. Every ship starts the game with 100% health.
@@ -57,16 +61,24 @@ if any of them pressed id="leave-btn" than the link terminates
 10.1. Both healths - mine and the enemy's - are on screen from the very first moment of
 the game, at 100%, before anything is placed or fired. Players should see straight away
 that there is a health factor and that each side has only one ship.
-10.2. Each health is shown as a vertical bar on the right hand side of the board it belongs
-to: the enemy's bar next to the enemy board, mine next to my own board, each parallel to
-its board and centred on it, about half the height of the board.
+10.2. There is one board now, so the two healths sit side by side as horizontal bars above
+it - mine and the enemy's, clearly labelled, each about half the width of the board.
 10.2.1. The wording on screen must never suggest a fleet or several ships - this is a duel
-of one ship against one ship, so the boards read "Your ship" and "Enemy ship".
+of one ship against one ship, so the labels read "Your ship" and "Enemy ship".
 10.3. The bar carries the little ship icon in the ship's current colour, and the percentage,
 so the ship and the number always match the colour of the ship on the board.
-10.4. The bar fills from the bottom and empties downwards as the health falls, and its
-colour follows rule 6.4 - green at 100%, orange at 50%, almost red at 10%.
+10.4. The bar empties from its far end as the health falls, and its colour follows rule 6.4
+- green at 100%, orange at 50%, almost red at 10%.
 10.5. Next to each board label there is a ship counter, so nobody mistakes this for the
 classic battleship game with a fleet: it says 1 for the whole game and turns 0 the moment
 that ship is wrecked. It is painted in the ship's current colour like everything else.
 10.6. Showing the health reveals nothing about where a ship is - only how hurt it is.
+
+11. Collision
+11.1. Nothing stops the two ships from sailing into the same square. A player who moves onto
+the square the other ship is on rams it: both ships are wrecked.
+11.2. A collision ends the round with no winner - neither player scores a point (rule 8).
+11.3. That one square shows both wrecks.
+11.4. The collision is settled before the fire is: a burning ship that rams on the very move
+that would have taken it to 0% does not lose - the round is a draw. So a player never loses
+on the last step of their own fire.
