@@ -24,6 +24,10 @@ the board is shared
 6.1. Every ship starts the game with 100% health.
 6.2. The first hit on a ship does not sink it: its health drops to 50% and the ship
 turns orange - it is on fire, not wrecked.
+6.2.1. A hit must be visible on the board, not only on the health bar: the shell lands with
+a flash and a shockwave and the ship it found lights up for a second, then the sea hides it
+again. The crater a hit leaves stays orange and smoking, so the square where a ship was
+struck can be told from an ordinary miss for the rest of the round.
 6.3. A ship that is on fire keeps burning: with every next move that its owner makes
 its health drops by a further 10% (50 -> 40 -> 30 -> 20 -> 10 -> 0).
 6.4. The ship colour follows the health: at 50% it is orange and it turns more and more

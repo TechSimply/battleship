@@ -19,6 +19,8 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   **50%** and catches fire (orange); every **move** its owner then makes burns another
   **10%** off, and the colour slides from orange towards the wreck's red. A second hit takes
   it straight to 0%. At **0% that player loses** and the ship plays the shipwreck animation.
+  A hit shows on the board too (rule 6.2.1): the struck hull flashes into view for a second
+  under the blast, and its crater stays orange and smoking instead of grey.
 - **Ramming (rule 11):** sailing onto the other ship wrecks **both** — the round ends with
   **no point for either player** and both wrecks on that one square, played as a collision
   (the hulls run together along the rammer's own course, then flash, ring and shake) rather

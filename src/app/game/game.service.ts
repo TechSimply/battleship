@@ -99,8 +99,17 @@ export class GameService {
     shooter: PlayerId;
     from: Coord | null;
     to: Coord;
+    /** Rule 6.2: the shot found the enemy ship. */
+    hit: boolean;
     n: number;
   } | null>(null);
+
+  /**
+   * Craters that were hits, not misses — the squares where a ship was actually
+   * struck. Public knowledge (both players watched the shot land), and what
+   * lets the board keep a hit square burning instead of grey.
+   */
+  readonly hitSquares = signal<boolean[]>(Array(BOARD_W * BOARD_H).fill(false));
 
   /**
    * Interpret a tap by `actor` on the board as a game action, apply it, and
@@ -200,6 +209,7 @@ export class GameService {
     this.winner.set(null);
     this.players.set([emptyPlayer(), emptyPlayer()]);
     this.destroyed.set(Array(BOARD_W * BOARD_H).fill(false));
+    this.hitSquares.set(Array(BOARD_W * BOARD_H).fill(false));
     this.lastRam.set(null);
   }
 
@@ -236,12 +246,22 @@ export class GameService {
     if (own && sameCell(own, c)) return false; // rule 2.3: one board — not under your own keel
 
     const enemy = other(shooter);
+    const enemyShip = this.players()[enemy].ship;
+    const hit = !!enemyShip && sameCell(enemyShip, c);
     this.lastShot.update((prev) => ({
       shooter,
       from: own ? { ...own } : null,
       to: { ...c },
+      hit,
       n: (prev?.n ?? 0) + 1,
     }));
+    if (hit) {
+      this.hitSquares.update((h) => {
+        const next = [...h];
+        next[idx(c)] = true;
+        return next;
+      });
+    }
 
     // Rule 5.3: the crater is dead for both ships now.
     this.destroyed.update((d) => {
@@ -251,7 +271,6 @@ export class GameService {
     });
 
     this.updatePlayer(enemy, (p) => {
-      const hit = !!p.ship && sameCell(p.ship, c);
       // Rule 6.2: the first hit takes the ship to 50% and sets it on fire.
       // Rule 6.5: a hit on a ship that is already burning finishes it.
       const health = hit ? (p.health > HIT_HEALTH ? HIT_HEALTH : 0) : p.health;

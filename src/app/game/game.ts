@@ -41,6 +41,12 @@ interface CellVM {
    * rammer came in on, so the crash plays along the line it actually sailed.
    */
   ram: { angle: number; mineRammed: boolean } | null;
+  /** A crater that was a hit, not a miss — it keeps burning instead of greying. */
+  hitCrater: boolean;
+  /** The shot that just landed here found a ship: play the impact. */
+  impact: boolean;
+  /** Draw the struck hull in the flash — only where no ship is drawn already. */
+  impactGhost: boolean;
 }
 
 /** One player's health readout: the gauges above the board (rule 10). */
@@ -53,6 +59,8 @@ interface GaugeVM {
   color: string;
   /** Rule 10.5: 1 all game, 0 once this ship is wrecked. */
   ships: number;
+  /** This ship was just hit — the gauge takes the blow with it. */
+  struck: boolean;
 }
 
 /**
@@ -126,6 +134,8 @@ const MAX_BOARD = 420;
 const FIT_SLACK = 1;
 /** Re-measure passes per fit; see `fitBoards`. Two is normally plenty. */
 const FIT_PASSES = 3;
+/** How long the hit flash stays on the square, in ms (the shell lands at ~300). */
+const IMPACT_MS = 1400;
 
 @Component({
   selector: 'app-game',
@@ -148,12 +158,33 @@ export class Game {
   protected readonly rocket = signal<RocketVM | null>(null);
   private rocketTimer?: ReturnType<typeof setTimeout>;
 
+  /**
+   * Rule 6.2's moment: a shot that found a ship. The struck hull flashes into
+   * view on that square with a burst, and the victim's gauge takes the blow —
+   * then it is gone, so nothing lasting is revealed about where they are.
+   */
+  protected readonly impact = signal<{ c: Coord; victim: PlayerId } | null>(null);
+  private impactTimer?: ReturnType<typeof setTimeout>;
+
   constructor() {
     // Tracer: fly a rocket from the shooter's (exposed) square to the bombed
     // square, so the exposure visibly originates from the shot.
     effect(() => {
       const shot = this.game.lastShot();
       if (shot) untracked(() => this.animateShot(shot));
+    });
+
+    // A hit plays its own beat on top of the tracer: the flash on the square,
+    // and the shaken gauge. Both are transient — the board goes back to hiding
+    // the enemy the moment it is over.
+    effect(() => {
+      const shot = this.game.lastShot();
+      if (!shot?.hit) return;
+      untracked(() => {
+        clearTimeout(this.impactTimer);
+        this.impact.set({ c: shot.to, victim: shot.shooter === 0 ? 1 : 0 });
+        this.impactTimer = setTimeout(() => this.impact.set(null), IMPACT_MS);
+      });
     });
 
     // A new round starts from clean water: no rockets have been fired yet.
@@ -179,6 +210,7 @@ export class Game {
       removeEventListener('orientationchange', refit);
       visualViewport?.removeEventListener('resize', refit);
       clearTimeout(this.rocketTimer);
+      clearTimeout(this.impactTimer);
     });
   }
 
@@ -232,12 +264,21 @@ export class Game {
           : 'Tap a square to place your ship';
       case 'fire':
         return this.myTurn() ? 'Fire! Tap a square' : 'Enemy is taking aim…';
-      case 'move':
-        if (!this.myTurn()) return 'Enemy ship is repositioning…';
+      case 'move': {
+        const shot = this.game.lastShot();
+        if (!this.myTurn()) {
+          return shot?.hit && shot.shooter !== me
+            ? `You have been hit — on fire at ${this.game.players()[me].health}%`
+            : 'Enemy ship is repositioning…';
+        }
+        if (shot?.hit && shot.shooter === me) {
+          return `Direct hit! Enemy at ${this.game.players()[me === 0 ? 1 : 0].health}% and burning`;
+        }
         // Rule 6.3: moving while on fire costs another 10%.
         return this.game.players()[me].health < 100
           ? 'Move one square — the fire costs you 10%'
           : 'Your position is exposed — move your ship one square';
+      }
       case 'gameover':
         // Rule 11.2: a ram wrecks both ships and scores for neither. A ram with
         // no approach is rule 11.5 — both players picked the same square.
@@ -260,6 +301,7 @@ export class Game {
     const state = this.game.players()[id];
     return {
       mine,
+      struck: this.impact()?.victim === id,
       label: mine ? 'Your ship' : 'Enemy ship',
       health: state.health,
       color: healthColor(state.health),
@@ -298,6 +340,8 @@ export class Game {
 
     // Rule 11's collision: the wrecks slide together along the rammer's own
     // course. A ram at placement has no approach, so it plays straight across.
+    const hitSquares = this.game.hitSquares();
+    const impact = this.impact();
     const lastRam = this.game.lastRam();
     const ramAngle =
       lastRam && lastRam.from
@@ -339,6 +383,9 @@ export class Game {
             lastRam && at(lastRam.at, x, y) && mineState.shipDestroyed && foeState.shipDestroyed
               ? { angle: ramAngle, mineRammed: lastRam.rammer === me }
               : null,
+          hitCrater: hitSquares[y * BOARD_W + x],
+          impact: !!impact && at(impact.c, x, y),
+          impactGhost: !!impact && at(impact.c, x, y) && !mine && !enemy,
         });
       }
     }
