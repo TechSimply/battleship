@@ -459,6 +459,12 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     background: currentColor;
     box-shadow: 0 0 8px currentColor;
     transition: width 0.45s ease;
+
+    // A zero-width bar still paints its glow, which read as a sliver of health
+    // left on a ship that has none.
+    &.empty {
+      box-shadow: none;
+    }
   }
 }
 
@@ -724,18 +730,61 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     }
   }
 
-  // Rule 11.3: a ram puts both wrecks on this one square, so they share it
-  // side by side rather than one hiding the other.
+  // Rule 11: the crash. The two hulls share this one square (rule 11.3), and
+  // they get there by sailing into each other along the rammer's own course
+  // (`--ram-angle`, set per cell): the rammer drives in, the ship it hit is
+  // knocked back the same way, and the impact throws out a flash and a ring.
+  // Rotate-translate-unrotate is what carries a straight slide along an
+  // arbitrary angle without skewing the hull that is riding it.
   &.rammed {
     gap: 2%;
+    animation: ram-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) 0.36s;
 
     .icon-wreck {
       width: 44%;
       height: 44%;
+    }
 
-      & + .icon-wreck {
-        transform: scaleX(-1); // the two hulls face each other, as they collided
-      }
+    // Specific enough to outrank the wreck's own settle animation: these two
+    // hulls do not sink into place, they crash into it.
+    .icon-wreck.ram-rammer {
+      transform: scaleX(-1); // bow turned into the ship it is running down
+      animation: ram-drive 0.38s cubic-bezier(0.4, 0, 0.9, 0.6);
+    }
+
+    .icon-wreck.ram-victim {
+      animation: ram-recoil 0.8s cubic-bezier(0.2, 0.9, 0.3, 1);
+    }
+  }
+
+  // Impact: a white core going off between the hulls and a ring thrown out.
+  .ram-burst {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 60%;
+    height: 60%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(255, 255, 255, 0.95) 0%,
+      rgba(255, 214, 130, 0.75) 35%,
+      rgba(255, 92, 74, 0) 70%
+    );
+    box-shadow: 0 0 18px rgba(255, 180, 90, 0.75);
+    opacity: 0;
+    animation: ram-flash 0.8s ease-out 0.32s;
+    pointer-events: none;
+
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 190, 120, 0.85);
+      opacity: 0;
+      animation: ram-ring 0.95s ease-out 0.36s;
     }
   }
 
@@ -853,6 +902,76 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
   50% {
     transform: translateY(4%) rotate(1.2deg);
+  }
+}
+
+// Rule 11's collision, in three parts: the rammer drives in along its course,
+// the ship it hits is knocked back down the same line, and the square itself
+// takes the blow. `--ram-angle` is the course; rotating into it, sliding along
+// x and rotating back keeps each hull upright while it travels.
+@keyframes ram-drive {
+  0% {
+    transform: rotate(var(--ram-angle, 0deg)) translateX(-150%) rotate(calc(-1 * var(--ram-angle, 0deg)))
+      scaleX(-1);
+  }
+  100% {
+    transform: rotate(var(--ram-angle, 0deg)) translateX(0) rotate(calc(-1 * var(--ram-angle, 0deg)))
+      scaleX(-1);
+  }
+}
+
+@keyframes ram-recoil {
+  0%,
+  46% {
+    transform: rotate(var(--ram-angle, 0deg)) translateX(0) rotate(calc(-1 * var(--ram-angle, 0deg)));
+  }
+  62% {
+    transform: rotate(var(--ram-angle, 0deg)) translateX(38%) rotate(calc(-1 * var(--ram-angle, 0deg)));
+  }
+  100% {
+    transform: rotate(var(--ram-angle, 0deg)) translateX(0) rotate(calc(-1 * var(--ram-angle, 0deg)));
+  }
+}
+
+@keyframes ram-shake {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(6%, -4%);
+  }
+  45% {
+    transform: translate(-5%, 3%);
+  }
+  70% {
+    transform: translate(3%, 2%);
+  }
+}
+
+@keyframes ram-flash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  25% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+}
+
+@keyframes ram-ring {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.3);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
   }
 }
 
@@ -1054,6 +1173,11 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   .cell.ship-destroyed,
   // The flame on a burning ship is state (rule 6.2): keep it, hold it still.
   .cell.ship.burning::before,
+  .cell.rammed,
+  .ram-rammer,
+  .ram-victim,
+  .ram-burst,
+  .ram-burst::after,
   .health-fill,
   .shell,
   .shell::before,

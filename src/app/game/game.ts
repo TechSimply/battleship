@@ -36,6 +36,11 @@ interface CellVM {
   moveDir: number;
   /** Health colour of whichever ship is drawn here (rule 6.4); '' if none. */
   color: string;
+  /**
+   * Rule 11: the two hulls collided here. The angle (deg) is the course the
+   * rammer came in on, so the crash plays along the line it actually sailed.
+   */
+  ram: { angle: number; mineRammed: boolean } | null;
 }
 
 /** One player's health readout: the gauges above the board (rule 10). */
@@ -286,6 +291,15 @@ export class Game {
 
     const at = (c: Coord | null, x: number, y: number) => !!c && c.x === x && c.y === y;
 
+    // Rule 11's collision: the wrecks slide together along the rammer's own
+    // course. A ram at placement has no approach, so it plays straight across.
+    const lastRam = this.game.lastRam();
+    const ramAngle =
+      lastRam && lastRam.from
+        ? (Math.atan2(lastRam.at.y - lastRam.from.y, lastRam.at.x - lastRam.from.x) * 180) /
+          Math.PI
+        : 0;
+
     const cells: CellVM[] = [];
     for (let y = 0; y < BOARD_H; y++) {
       for (let x = 0; x < BOARD_W; x++) {
@@ -316,6 +330,10 @@ export class Game {
             : enemy
               ? healthColor(foeState.health)
               : '',
+          ram:
+            lastRam && at(lastRam.at, x, y) && mineState.shipDestroyed && foeState.shipDestroyed
+              ? { angle: ramAngle, mineRammed: lastRam.rammer === me }
+              : null,
         });
       }
     }

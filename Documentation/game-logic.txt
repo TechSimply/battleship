@@ -78,7 +78,9 @@ that ship is wrecked. It is painted in the ship's current colour like everything
 11.1. Nothing stops the two ships from sailing into the same square. A player who moves onto
 the square the other ship is on rams it: both ships are wrecked.
 11.2. A collision ends the round with no winner - neither player scores a point (rule 8).
-11.3. That one square shows both wrecks.
+11.3. That one square shows both wrecks, and the crash is played as a crash: the two hulls
+run into each other along the course the rammer sailed, the impact flashes and throws out a
+shockwave, and the square itself shakes. It must not look like the ordinary sinking.
 11.4. The collision is settled before the fire is: a burning ship that rams on the very move
 that would have taken it to 0% does not lose - the round is a draw. So a player never loses
 on the last step of their own fire.

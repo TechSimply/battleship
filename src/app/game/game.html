@@ -95,7 +95,7 @@
                 <span class="gauge-value">{{ gauge.health }}%</span>
               </div>
               <span class="gauge-tube">
-                <span class="gauge-fill" [style.width.%]="gauge.health"></span>
+                <span class="gauge-fill" [class.empty]="gauge.health === 0" [style.width.%]="gauge.health"></span>
               </span>
             </div>
           }
@@ -129,7 +129,8 @@
               [class.ship]="cell.mine || cell.enemy"
               [class.burning]="cell.burningMine || cell.burningEnemy"
               [class.ship-destroyed]="cell.wreckMine || cell.wreckEnemy"
-              [class.rammed]="cell.wreckMine && cell.wreckEnemy"
+              [class.rammed]="!!cell.ram"
+              [style.--ram-angle]="(cell.ram?.angle ?? 0) + 'deg'"
               [class.exposed]="cell.exposedMine || cell.exposedEnemy"
               [class.move-target]="cell.moveTarget"
               [class.hint]="cell.hint"
@@ -137,11 +138,22 @@
               (click)="onCellClick(cell)"
             >
               @if (cell.wreckMine || cell.wreckEnemy) {
+                @if (cell.ram) {
+                  <!-- The impact itself: a flash and a shockwave ring thrown out
+                       from the point the two hulls met. -->
+                  <span class="ram-burst" aria-hidden="true"></span>
+                }
                 <!-- Rule 11.3: a ram leaves both wrecks on this one square. -->
                 @for (wreck of (cell.wreckMine && cell.wreckEnemy ? [0, 1] : [0]); track wreck) {
                   <!-- The ship from icon-ship, snapped in two and going under:
                        bow already swallowed, stern tilting up, mast broken. -->
-                  <svg class="icon icon-wreck" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg
+                    class="icon icon-wreck"
+                    [class.ram-victim]="cell.ram && $index === 0"
+                    [class.ram-rammer]="cell.ram && $index === 1"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
                     <g class="wreck-bow">
                       <path fill="currentColor" d="M5.4 11.9 8.6 18.5H3.0Z" />
                     </g>

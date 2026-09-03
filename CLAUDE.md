@@ -20,7 +20,9 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   **10%** off, and the colour slides from orange towards the wreck's red. A second hit takes
   it straight to 0%. At **0% that player loses** and the ship plays the shipwreck animation.
 - **Ramming (rule 11):** sailing onto the other ship wrecks **both** — the round ends with
-  **no point for either player** and both wrecks on that one square. It is settled *before*
+  **no point for either player** and both wrecks on that one square, played as a collision
+  (the hulls run together along the rammer's own course, then flash, ring and shake) rather
+  than the ordinary sinking. It is settled *before*
   the fire, so a ship at 10% that rams draws instead of losing. Placing both ships on the same
   square is the same thing, before the first shot.
 - **Health display (rule 10):** both healths are on screen from the first second, as two

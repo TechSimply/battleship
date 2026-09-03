@@ -78,6 +78,19 @@ export class GameService {
   );
 
   /**
+   * Transient: the last ram (rule 11), for the collision animation — where the
+   * two hulls met, and which square the rammer came in from (null when both
+   * ships were simply placed on the same square, so there is no approach).
+   * `n` makes each ram a distinct value, like `lastShot`.
+   */
+  readonly lastRam = signal<{
+    at: Coord;
+    from: Coord | null;
+    rammer: PlayerId;
+    n: number;
+  } | null>(null);
+
+  /**
    * Transient: the last shot fired, for the tracer animation (from the
    * shooter's exposed square to the bombed square). `n` makes each shot a
    * distinct value so effects fire even when coordinates repeat.
@@ -187,6 +200,7 @@ export class GameService {
     this.winner.set(null);
     this.players.set([emptyPlayer(), emptyPlayer()]);
     this.destroyed.set(Array(BOARD_W * BOARD_H).fill(false));
+    this.lastRam.set(null);
   }
 
   /** Clear the score — a fresh session (rule 8 scope is one game id). */
@@ -207,7 +221,7 @@ export class GameService {
 
     const [a, b] = this.players();
     if (sameCell(a.ship!, b.ship!)) {
-      this.ram();
+      this.ram(a.ship!, null, player);
       return true;
     }
     this.currentPlayer.set(0);
@@ -271,8 +285,9 @@ export class GameService {
     // 10% that rams does not lose the round; it draws it.
     const foe = this.players()[other(player)].ship;
     if (foe && sameCell(foe, c)) {
+      const from = this.players()[player].ship;
       this.updatePlayer(player, (p) => ({ ...p, ship: c }));
-      this.ram();
+      this.ram(c, from, player);
       return true;
     }
 
@@ -294,7 +309,13 @@ export class GameService {
   }
 
   /** Rule 11: both ships wrecked on the same square, and no point for anyone. */
-  private ram(): void {
+  private ram(at: Coord, from: Coord | null, rammer: PlayerId): void {
+    this.lastRam.update((prev) => ({
+      at: { ...at },
+      from: from ? { ...from } : null,
+      rammer,
+      n: (prev?.n ?? 0) + 1,
+    }));
     this.players.update(
       ([a, b]) =>
         [
