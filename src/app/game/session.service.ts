@@ -645,10 +645,10 @@ export class SessionService {
     else this.connectToBroker(n);
   }
 
-  /** Forward a local tap; applies it and mirrors it to the opponent. */
-  act(board: PlayerId, c: { x: number; y: number }): void {
+  /** Forward a local tap on the united board (rule 2.3); applies and mirrors it. */
+  act(c: { x: number; y: number }): void {
     if (this.state() !== 'playing') return;
-    const action = this.game.tryLocal(this.myPlayer(), board, c);
+    const action = this.game.tryLocal(this.myPlayer(), c);
     if (action && this.mode === 'p2p') this.sendAction(action);
   }
 

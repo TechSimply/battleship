@@ -8,20 +8,25 @@ Deployed to GitHub Pages: https://techsimply.github.io/battleship/
 The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-logic.txt)
 (the owner edits it directly — always re-read it before changing game logic). In short:
 
-- Two boards, **4×4** each, stacked vertically (enemy waters on top, your fleet below).
+- **One united 4×4 board** (rule 2.3). The two boards survive only as the private placement
+  step: each player picks their starting square hidden from the other, and from the first shot
+  on both ships sail, fire at and bomb the same 16 squares — a crater is dead for both.
 - **One ship per player**, occupying one square; it can move to any of its 8 bordering squares.
-- Placement phase (both players place their own ship; ships are hidden from the opponent).
 - Then alternating fire: firing **exposes** the square you fired from (rule 5.2), the bombed
   square becomes **permanently unusable** (rule 5.3), and after firing you **must move** one
-  square if any usable neighbour remains (rule 5.4).
+  square if any usable neighbour remains (rule 5.4). You cannot bomb the square you sit on.
 - **Health (rule 6):** a ship starts at 100%. The first hit does not sink it — it drops to
   **50%** and catches fire (orange); every **move** its owner then makes burns another
   **10%** off, and the colour slides from orange towards the wreck's red. A second hit takes
   it straight to 0%. At **0% that player loses** and the ship plays the shipwreck animation.
-- **Health display (rule 10):** both healths are on screen from the first second, as a
-  vertical gauge beside each board (about half its height), with the little ship icon and the
-  percentage in the ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so
-  nobody reads this as the classic fleet game. On-screen wording never says "fleet".
+- **Ramming (rule 11):** sailing onto the other ship wrecks **both** — the round ends with
+  **no point for either player** and both wrecks on that one square. It is settled *before*
+  the fire, so a ship at 10% that rams draws instead of losing. Placing both ships on the same
+  square is the same thing, before the first shot.
+- **Health display (rule 10):** both healths are on screen from the first second, as two
+  horizontal gauges above the board, with the little ship icon and the percentage in the
+  ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so nobody reads this
+  as the classic fleet game. On-screen wording never says "fleet".
 - **Sessions (rule 7):** a lobby offers *New Game* / *Join The Game*. New Game claims the
   lowest free `Battle{n}` id; the opponent joins by typing that id.
 - **Scoring (rule 8):** within a session, one victory = one point; score persists across
@@ -38,7 +43,9 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 
 - `src/app/game/game.service.ts` — pure rules engine. State in signals; every mutation is a
   serializable `GameAction` (`place` / `fire` / `move` / `reset`). `apply()` runs an action
-  (local or received); `tryLocal()` validates a tap and returns the action to mirror. Because
+  (local or received); `tryLocal(actor, coord)` validates a tap on the one board and returns
+  the action to mirror. Craters live in a single shared `destroyed` signal (rule 2.3), not per
+  player; `rammed()` is the draw (`phase === 'gameover'` with `winner() === null`). Because
   both devices apply the same actions deterministically, derived state (exposure, bombed
   squares, scores) stays in sync with no extra messages. `reset()` = round reset (keeps score);
   `resetScores()` = new session.
@@ -126,10 +133,11 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   "Play vs Computer" runs a local bot (session mode `'bot'`, no PeerJS): an effect in
   `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
   short thinking delay whenever the game waits on player 1.
-- `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
-  is hidden until it is wrecked or the game ends — a *burning* enemy is never drawn on the
-  board, since revealing its square each turn would make finishing it trivial; its damage
-  shows only in the health gauge. Health colours live in `healthColor()` (game.ts) and reach
+- `src/app/game/` — per-player game view of the one united board: your ship is drawn, the
+  enemy's is hidden until it is wrecked or the game ends — a *burning* enemy is never drawn,
+  since revealing its square each turn would make finishing it trivial; its damage shows only
+  in the health gauge. The two gauges sit inside the board panel, above the board, so
+  `fitBoards()` counts them as panel chrome and the board still fits exactly. Health colours live in `healthColor()` (game.ts) and reach
   the CSS as `--ship-color` on the board panel, so gauge, ship icon, counter and the flame on
   the deck are always the same colour. It is a fixed, viewport-sized column
   that never scrolls: one dense top row (game id · score · leave), the status pill,

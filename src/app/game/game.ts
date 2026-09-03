@@ -15,23 +15,33 @@ import { SessionService } from './session.service';
 interface CellVM {
   x: number;
   y: number;
+  /** Rule 5.3: bombed, and dead for both ships now (rule 2.3). */
   destroyed: boolean;
-  hasShip: boolean;
-  shipDestroyed: boolean;
-  /** Rule 6.2: hit but still afloat — the ship is drawn on fire. */
-  burning: boolean;
-  exposed: boolean;
+  /** My ship sits here (and, once the round is over, the enemy's too). */
+  mine: boolean;
+  enemy: boolean;
+  /** Rule 6.2: hit but still afloat — that ship is drawn on fire. */
+  burningMine: boolean;
+  burningEnemy: boolean;
+  /** Rule 11.3: both wrecks share this one square. */
+  wreckMine: boolean;
+  wreckEnemy: boolean;
+  /** Rule 5.2: a square someone was seen firing from. */
+  exposedMine: boolean;
+  exposedEnemy: boolean;
   moveTarget: boolean;
-  /** Enemy board: a square the enemy ship could still be on (rules 5.2/5.4). */
+  /** A square the enemy ship could still be on (rules 5.2/5.4). */
   hint: boolean;
-  /** Rotation (deg) of the move arrow — points away from the ship. */
+  /** Rotation (deg) of the move arrow — points away from my ship. */
   moveDir: number;
+  /** Health colour of whichever ship is drawn here (rule 6.4); '' if none. */
+  color: string;
 }
 
-interface BoardVM {
-  id: PlayerId;
+/** One player's health readout: the gauges above the board (rule 10). */
+interface GaugeVM {
   mine: boolean;
-  cells: CellVM[];
+  label: string;
   /** Rule 6: 100 → 50 on the first hit → −10 per move → 0 = wrecked. */
   health: number;
   /** The colour that health paints everything in (rule 6.4 / rule 10.3). */
@@ -182,11 +192,27 @@ export class Game {
     () => this.game.scores()[this.session.myPlayer() === 0 ? 1 : 0],
   );
 
-  // Each device shows its own perspective: the enemy ship's board on top, own below.
-  protected readonly boards = computed<BoardVM[]>(() => {
+  /** Rule 2.3: one united board, seen from this device's point of view. */
+  protected readonly cells = computed<CellVM[]>(() => this.buildCells());
+
+  /** Rule 10: both healths, side by side above the board. */
+  protected readonly gauges = computed<GaugeVM[]>(() => {
     const me = this.session.myPlayer();
-    const enemy: PlayerId = me === 0 ? 1 : 0;
-    return [this.buildBoard(enemy, false), this.buildBoard(me, true)];
+    return [this.buildGauge(me, true), this.buildGauge(me === 0 ? 1 : 0, false)];
+  });
+
+  /** True while the board is waiting for this player to tap it. */
+  protected readonly boardActive = computed(() => {
+    if (this.session.state() !== 'playing') return false;
+    switch (this.game.phase()) {
+      case 'placement':
+        return !this.game.players()[this.session.myPlayer()].ship;
+      case 'fire':
+      case 'move':
+        return this.myTurn();
+      default:
+        return false;
+    }
   });
 
   protected readonly message = computed(() => {
@@ -198,9 +224,9 @@ export class Game {
       case 'placement':
         return this.game.players()[me].ship
           ? 'Waiting for your opponent to place their ship…'
-          : 'Tap your own board to place your ship';
+          : 'Tap a square to place your ship';
       case 'fire':
-        return this.myTurn() ? 'Fire! Tap a square on the enemy board' : 'Enemy is taking aim…';
+        return this.myTurn() ? 'Fire! Tap a square' : 'Enemy is taking aim…';
       case 'move':
         if (!this.myTurn()) return 'Enemy ship is repositioning…';
         // Rule 6.3: moving while on fire costs another 10%.
@@ -208,38 +234,43 @@ export class Game {
           ? 'Move one square — the fire costs you 10%'
           : 'Your position is exposed — move your ship one square';
       case 'gameover':
+        // Rule 11.2: a ram wrecks both ships and scores for neither.
+        if (this.game.rammed()) return 'You rammed each other — no point for anyone';
         return this.game.winner() === me
           ? 'Victory! Enemy ship destroyed'
           : 'Your ship was destroyed';
     }
   });
 
-  protected onCellClick(board: BoardVM, cell: CellVM): void {
-    this.session.act(board.id, { x: cell.x, y: cell.y });
+  protected onCellClick(cell: CellVM): void {
+    this.session.act({ x: cell.x, y: cell.y });
   }
 
-  protected isActiveBoard(board: BoardVM): boolean {
-    if (this.session.state() !== 'playing') return false;
-    switch (this.game.phase()) {
-      case 'placement':
-        return board.mine && !this.game.players()[board.id].ship;
-      case 'fire':
-        return this.myTurn() && !board.mine;
-      case 'move':
-        return this.myTurn() && board.mine;
-      default:
-        return false;
-    }
-  }
-
-  private buildBoard(id: PlayerId, mine: boolean): BoardVM {
+  private buildGauge(id: PlayerId, mine: boolean): GaugeVM {
     const state = this.game.players()[id];
+    return {
+      mine,
+      label: mine ? 'Your ship' : 'Enemy ship',
+      health: state.health,
+      color: healthColor(state.health),
+      ships: state.shipDestroyed ? 0 : 1,
+    };
+  }
+
+  private buildCells(): CellVM[] {
+    const me = this.session.myPlayer();
+    const foe: PlayerId = me === 0 ? 1 : 0;
+    const mineState = this.game.players()[me];
+    const foeState = this.game.players()[foe];
+    const destroyed = this.game.destroyed();
     const gameover = this.game.phase() === 'gameover';
-    // Rule 4: the ship is not visible to the opposing player (until it's hit
-    // or the game is over, when both ships are revealed).
-    const showShip = mine || gameover || state.shipDestroyed;
+
+    // Rule 4: the enemy ship is not visible until the round is over or it is
+    // wrecked. A *burning* enemy stays hidden too — one board means drawing it
+    // would hand you its square, and the gauge already tells you it is hurt.
+    const showFoe = gameover || foeState.shipDestroyed;
     const moveTargets =
-      mine && this.game.phase() === 'move' && this.myTurn() ? this.game.legalMoves(id) : [];
+      this.game.phase() === 'move' && this.myTurn() ? this.game.legalMoves(me) : [];
 
     // Where the enemy ship must be, deduced from public state alone: firing
     // exposed their square (rule 5.2) and the forced move (rule 5.4) put them
@@ -249,50 +280,55 @@ export class Game {
     // choosing a shot, and only once they have fired: before that every
     // unbombed square qualifies and the highlight would be noise.
     const hints =
-      !mine && this.game.phase() === 'fire' && this.myTurn() && state.exposedAt
-        ? this.game.possibleShipSquares(id)
+      this.game.phase() === 'fire' && this.myTurn() && foeState.exposedAt
+        ? this.game.possibleShipSquares(foe)
         : [];
+
+    const at = (c: Coord | null, x: number, y: number) => !!c && c.x === x && c.y === y;
 
     const cells: CellVM[] = [];
     for (let y = 0; y < BOARD_H; y++) {
       for (let x = 0; x < BOARD_W; x++) {
-        const hasShip = state.ship?.x === x && state.ship.y === y;
-        const shipVisible = hasShip && showShip;
+        const mine = at(mineState.ship, x, y);
+        const enemy = at(foeState.ship, x, y) && showFoe;
         cells.push({
           x,
           y,
-          destroyed: state.destroyed[y * BOARD_W + x],
-          hasShip: shipVisible,
-          shipDestroyed: hasShip && state.shipDestroyed,
-          burning: shipVisible && !state.shipDestroyed && state.health < 100,
-          // The exposure reticle yields only to a ship actually drawn in the cell —
-          // the enemy must see the exposure even while the ship still sits there.
-          exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !shipVisible,
+          destroyed: destroyed[y * BOARD_W + x],
+          mine: mine && !mineState.shipDestroyed,
+          enemy: enemy && !foeState.shipDestroyed,
+          burningMine: mine && !mineState.shipDestroyed && mineState.health < 100,
+          burningEnemy: enemy && !foeState.shipDestroyed && foeState.health < 100,
+          wreckMine: mine && mineState.shipDestroyed,
+          wreckEnemy: enemy && foeState.shipDestroyed,
+          // The exposure reticle yields only to a ship actually drawn in the
+          // cell — the enemy must see the exposure even while a ship sits there.
+          exposedMine: at(mineState.exposedAt, x, y) && !mine,
+          exposedEnemy: at(foeState.exposedAt, x, y) && !enemy && !mine,
           moveTarget: moveTargets.some((m) => m.x === x && m.y === y),
           hint: hints.some((h) => h.x === x && h.y === y),
-          // Arrow points from the ship outward to this escape square.
-          moveDir: state.ship
-            ? (Math.atan2(y - state.ship.y, x - state.ship.x) * 180) / Math.PI
+          // Arrow points from my ship outward to this escape square.
+          moveDir: mineState.ship
+            ? (Math.atan2(y - mineState.ship.y, x - mineState.ship.x) * 180) / Math.PI
             : 0,
+          color: mine
+            ? healthColor(mineState.health)
+            : enemy
+              ? healthColor(foeState.health)
+              : '',
         });
       }
     }
-    return {
-      id,
-      mine,
-      cells,
-      health: state.health,
-      color: healthColor(state.health),
-      ships: state.shipDestroyed ? 0 : 1,
-    };
+    return cells;
   }
 
   /**
-   * Rule 2.2's two stacked boards must share one screen with no scrolling.
-   * `.boards` is the flex row that absorbs whatever height the chrome leaves
-   * over, so measuring it needs no hardcoded chrome estimate: the boards are
-   * sized to exactly half of that space (minus one board panel's own padding
-   * and header), and shrink — "zoom out" — as the viewport gets smaller.
+   * The board must fit the screen with no scrolling. `.boards` is the flex row
+   * that absorbs whatever height the chrome leaves over, so measuring it needs
+   * no hardcoded chrome estimate: the board is sized to that space (minus the
+   * panel's own padding and header) and shrinks — "zoom out" — as the viewport
+   * gets smaller. The loop still counts panels, so it kept working when rule
+   * 2.3 turned the two stacked boards into one.
    *
    * Everything is measured fractionally and re-measured after being applied.
    * `offsetWidth`/`offsetHeight` round to whole pixels, and a panel that
@@ -383,7 +419,7 @@ export class Game {
     const layer = this.shotLayer();
     if (!from || !layer) return;
     const mine = shot.shooter === this.session.myPlayer();
-    const geom = this.measure(layer, from, shot.to, mine);
+    const geom = this.measure(layer, from, shot.to);
     if (!geom) return;
 
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -415,7 +451,7 @@ export class Game {
       requestAnimationFrame(() => {
         // Re-measure rather than reuse the launch geometry: firing changes the
         // status line and can refit the boards, moving every cell centre.
-        const now = this.measure(layer, from, shot.to, mine) ?? geom;
+        const now = this.measure(layer, from, shot.to) ?? geom;
         this.rocket.update((r) =>
           r ? { ...r, transform: `translate(${now.bx}px, ${now.by}px) rotate(${now.angle}deg)` } : r,
         );
@@ -451,7 +487,7 @@ export class Game {
 
     let moved = false;
     const next = current.flatMap((t) => {
-      const geom = this.measure(layer, t.from, t.to, t.mine);
+      const geom = this.measure(layer, t.from, t.to);
       if (!geom) {
         moved = true; // the board it was drawn across is gone
         return [];
@@ -477,14 +513,13 @@ export class Game {
   }
 
   /**
-   * Centre-to-centre geometry of a shot, in shot-layer coordinates. A shot
-   * always crosses the two boards: the shooter's square is on their own board,
-   * the target square on the board being bombed.
+   * Centre-to-centre geometry of a shot, in shot-layer coordinates. Both ends
+   * are squares of the one united board (rule 2.3).
    */
-  private measure(layer: HTMLElement, from: Coord, to: Coord, mine: boolean): ShotGeom | null {
+  private measure(layer: HTMLElement, from: Coord, to: Coord): ShotGeom | null {
     const root = this.host.nativeElement;
-    const fromEl = root.querySelector(`#${mine ? 'fleet' : 'enemy'}-cell-${from.x}-${from.y}`);
-    const toEl = root.querySelector(`#${mine ? 'enemy' : 'fleet'}-cell-${to.x}-${to.y}`);
+    const fromEl = root.querySelector(`#cell-${from.x}-${from.y}`);
+    const toEl = root.querySelector(`#cell-${to.x}-${to.y}`);
     if (!fromEl || !toEl) return null;
 
     const lr = layer.getBoundingClientRect();

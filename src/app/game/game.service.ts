@@ -39,12 +39,11 @@ export interface PlayerState {
   shipDestroyed: boolean;
   /** Square the opponent saw when this player last fired (rule 5.2). */
   exposedAt: Coord | null;
-  /** Bombed squares are unusable forever (rule 5.3); indexed y * BOARD_W + x. */
-  destroyed: boolean[];
 }
 
 const idx = (c: Coord) => c.y * BOARD_W + c.x;
 const sameCell = (a: Coord, b: Coord) => a.x === b.x && a.y === b.y;
+const other = (p: PlayerId): PlayerId => (p === 0 ? 1 : 0);
 
 function emptyPlayer(): PlayerState {
   return {
@@ -52,7 +51,6 @@ function emptyPlayer(): PlayerState {
     health: FULL_HEALTH,
     shipDestroyed: false,
     exposedAt: null,
-    destroyed: Array(BOARD_W * BOARD_H).fill(false),
   };
 }
 
@@ -61,12 +59,23 @@ export class GameService {
   readonly phase = signal<Phase>('placement');
   /** Whose turn it is during fire/move. Player 0 (the host) fires first. */
   readonly currentPlayer = signal<PlayerId>(0);
+  /** Null during play, and null at 'gameover' when the round was a draw. */
   readonly winner = signal<PlayerId | null>(null);
   readonly players = signal<[PlayerState, PlayerState]>([emptyPlayer(), emptyPlayer()]);
+  /**
+   * Rule 2.3: one united board. The two boards exist only for placement, so
+   * bombed squares (rule 5.3) are a single shared set — a crater is dead for
+   * both ships. Indexed y * BOARD_W + x.
+   */
+  readonly destroyed = signal<boolean[]>(Array(BOARD_W * BOARD_H).fill(false));
   /** Rule 8: running score within the session — one point per victory. */
   readonly scores = signal<[number, number]>([0, 0]);
 
   readonly bothPlaced = computed(() => this.players().every((p) => p.ship !== null));
+  /** Rule 11.2: the round ended with both ships wrecked and nobody scoring. */
+  readonly rammed = computed(
+    () => this.phase() === 'gameover' && this.players().every((p) => p.shipDestroyed),
+  );
 
   /**
    * Transient: the last shot fired, for the tracer animation (from the
@@ -81,23 +90,21 @@ export class GameService {
   } | null>(null);
 
   /**
-   * Interpret a tap by `actor` on `board` as a game action, apply it, and
+   * Interpret a tap by `actor` on the board as a game action, apply it, and
    * return it so the caller can forward it to the other device.
    * Returns null when the tap is not a legal action right now.
    */
-  tryLocal(actor: PlayerId, board: PlayerId, c: Coord): GameAction | null {
+  tryLocal(actor: PlayerId, c: Coord): GameAction | null {
     let action: GameAction | null = null;
     switch (this.phase()) {
       case 'placement':
-        if (board === actor) action = { kind: 'place', player: actor, c };
+        action = { kind: 'place', player: actor, c };
         break;
       case 'fire':
-        if (board !== actor && actor === this.currentPlayer())
-          action = { kind: 'fire', player: actor, c };
+        if (actor === this.currentPlayer()) action = { kind: 'fire', player: actor, c };
         break;
       case 'move':
-        if (board === actor && actor === this.currentPlayer())
-          action = { kind: 'move', player: actor, c };
+        if (actor === this.currentPlayer()) action = { kind: 'move', player: actor, c };
         break;
     }
     return action && this.apply(action) ? action : null;
@@ -119,7 +126,7 @@ export class GameService {
   }
 
   /** Bordering squares of `c` (rule 3) that aren't bombed (rule 5.3). */
-  neighborsOf(c: Coord, destroyed: boolean[]): Coord[] {
+  neighborsOf(c: Coord, destroyed = this.destroyed()): Coord[] {
     const moves: Coord[] = [];
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
@@ -133,11 +140,15 @@ export class GameService {
     return moves;
   }
 
-  /** Legal one-square moves: all 8 bordering squares (rule 3) that are usable (rule 5.3). */
+  /**
+   * Legal one-square moves: all 8 bordering squares (rule 3) that are still
+   * usable (rule 5.3). The square the other ship is on is deliberately among
+   * them — sailing into it is a ram (rule 11), not an illegal move.
+   */
   legalMoves(player: PlayerId): Coord[] {
     const state = this.players()[player];
     if (!state.ship) return [];
-    return this.neighborsOf(state.ship, state.destroyed);
+    return this.neighborsOf(state.ship);
   }
 
   /**
@@ -145,22 +156,27 @@ export class GameService {
    * public information alone — no peeking at the real `ship` field. Firing
    * exposes the exact square (rule 5.2); after that the ship either had to
    * move to a still-usable bordering square (rule 5.4) or, if none existed,
-   * never moved at all. Everything else is provably impossible. Used by the
-   * computer opponent so it never wastes a shot on a square the rules have
-   * already ruled out, while still choosing randomly among what's left.
+   * never moved at all. Everything else is provably impossible — including
+   * the square the *asking* player is standing on, since a ship that had
+   * sailed into them would have rammed (rule 11). Used by the computer
+   * opponent, and to hint the same deduction to a human.
    */
   possibleShipSquares(player: PlayerId): Coord[] {
     const state = this.players()[player];
+    const hunter = this.players()[other(player)].ship;
+    const free = (c: Coord) => !hunter || !sameCell(c, hunter);
+
     if (!state.exposedAt) {
       const all: Coord[] = [];
+      const destroyed = this.destroyed();
       for (let y = 0; y < BOARD_H; y++) {
         for (let x = 0; x < BOARD_W; x++) {
-          if (!state.destroyed[y * BOARD_W + x]) all.push({ x, y });
+          if (!destroyed[y * BOARD_W + x] && free({ x, y })) all.push({ x, y });
         }
       }
       return all;
     }
-    const moved = this.neighborsOf(state.exposedAt, state.destroyed);
+    const moved = this.neighborsOf(state.exposedAt).filter(free);
     return moved.length > 0 ? moved : [state.exposedAt];
   }
 
@@ -170,6 +186,7 @@ export class GameService {
     this.currentPlayer.set(0);
     this.winner.set(null);
     this.players.set([emptyPlayer(), emptyPlayer()]);
+    this.destroyed.set(Array(BOARD_W * BOARD_H).fill(false));
   }
 
   /** Clear the score — a fresh session (rule 8 scope is one game id). */
@@ -177,41 +194,54 @@ export class GameService {
     this.scores.set([0, 0]);
   }
 
-  /** Rule 4: both players place their own ship; done once each has placed. */
+  /**
+   * Rule 4: both players place their own ship, each on their own board and
+   * hidden from the other, so nothing stops them from picking the same square.
+   * On the united board that is a ram before the first shot (rule 11).
+   */
   private placeShip(player: PlayerId, c: Coord): boolean {
     if (this.phase() !== 'placement') return false;
     if (this.players()[player].ship) return false; // already placed
     this.updatePlayer(player, (p) => ({ ...p, ship: c }));
+    if (!this.bothPlaced()) return true;
 
-    if (this.bothPlaced()) {
-      this.currentPlayer.set(0);
-      this.phase.set('fire');
+    const [a, b] = this.players();
+    if (sameCell(a.ship!, b.ship!)) {
+      this.ram();
+      return true;
     }
+    this.currentPlayer.set(0);
+    this.phase.set('fire');
     return true;
   }
 
   private fireAt(shooter: PlayerId, c: Coord): boolean {
     if (this.phase() !== 'fire' || shooter !== this.currentPlayer()) return false;
-    const enemy: PlayerId = shooter === 0 ? 1 : 0;
-    const enemyState = this.players()[enemy];
-    if (enemyState.destroyed[idx(c)]) return false; // square already bombed
+    if (this.destroyed()[idx(c)]) return false; // square already bombed
+    const own = this.players()[shooter].ship;
+    if (own && sameCell(own, c)) return false; // rule 2.3: one board — not under your own keel
 
-    const firedFrom = this.players()[shooter].ship;
+    const enemy = other(shooter);
     this.lastShot.update((prev) => ({
       shooter,
-      from: firedFrom ? { ...firedFrom } : null,
+      from: own ? { ...own } : null,
       to: { ...c },
       n: (prev?.n ?? 0) + 1,
     }));
 
+    // Rule 5.3: the crater is dead for both ships now.
+    this.destroyed.update((d) => {
+      const next = [...d];
+      next[idx(c)] = true;
+      return next;
+    });
+
     this.updatePlayer(enemy, (p) => {
-      const destroyed = [...p.destroyed];
-      destroyed[idx(c)] = true;
       const hit = !!p.ship && sameCell(p.ship, c);
       // Rule 6.2: the first hit takes the ship to 50% and sets it on fire.
       // Rule 6.5: a hit on a ship that is already burning finishes it.
       const health = hit ? (p.health > HIT_HEALTH ? HIT_HEALTH : 0) : p.health;
-      return { ...p, destroyed, health, shipDestroyed: p.shipDestroyed || health === 0 };
+      return { ...p, health, shipDestroyed: p.shipDestroyed || health === 0 };
     });
 
     // Rule 6.6: at 0% that player loses. Rule 8: the winner scores a point.
@@ -236,6 +266,16 @@ export class GameService {
     if (this.phase() !== 'move' || player !== this.currentPlayer()) return false;
     if (!this.legalMoves(player).some((m) => sameCell(m, c))) return false;
 
+    // Rule 11: sailing onto the other ship rams it — both go down and nobody
+    // scores. Rule 11.4: this is settled before the fire, so a ship on its last
+    // 10% that rams does not lose the round; it draws it.
+    const foe = this.players()[other(player)].ship;
+    if (foe && sameCell(foe, c)) {
+      this.updatePlayer(player, (p) => ({ ...p, ship: c }));
+      this.ram();
+      return true;
+    }
+
     // Rule 6.3: a burning ship loses another 10% every time it moves — sailing
     // on fans the flames. An untouched ship moves for free.
     this.updatePlayer(player, (p) => {
@@ -245,12 +285,25 @@ export class GameService {
 
     // Rule 6.6: burning down to 0% loses the game for its owner.
     if (this.players()[player].shipDestroyed) {
-      this.endGame(player === 0 ? 1 : 0);
+      this.endGame(other(player));
       return true;
     }
 
     this.endTurn();
     return true;
+  }
+
+  /** Rule 11: both ships wrecked on the same square, and no point for anyone. */
+  private ram(): void {
+    this.players.update(
+      ([a, b]) =>
+        [
+          { ...a, health: 0, shipDestroyed: true },
+          { ...b, health: 0, shipDestroyed: true },
+        ] as [PlayerState, PlayerState],
+    );
+    this.winner.set(null);
+    this.phase.set('gameover');
   }
 
   /** Rule 6.6 + rule 8: the round is over and the winner takes a point. */
