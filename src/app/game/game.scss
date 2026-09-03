@@ -1244,6 +1244,16 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   flex: none;
   align-self: center;
   margin: 0;
+  // Clearance for the phone's bottom edge. `.game`'s own bottom padding is only
+  // 0.5rem once the install offer is gone — which is always, in an installed
+  // PWA — and that left this button flush against the very bottom of the
+  // screen, where an iPhone reads a tap on it as the home-swipe gesture rather
+  // than a tap. So top the padding up to a real 1.4rem gap; where the install
+  // offer already holds a strip that big (`--install-strip`, set in app.scss)
+  // there is nothing left to add. `flex: none` means the margin counts as
+  // chrome for `fitBoards()`, so the lift comes out of the free space above the
+  // board, never out of the last row of cells.
+  margin-bottom: max(0px, calc(1.4rem - var(--install-strip, 0px)));
   padding: 0.6em 2em;
   font-size: 0.95em;
   font-weight: 700;
