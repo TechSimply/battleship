@@ -18,9 +18,11 @@ interface CellVM {
   destroyed: boolean;
   hasShip: boolean;
   shipDestroyed: boolean;
+  /** Rule 6.2: hit but still afloat — the ship is drawn on fire. */
+  burning: boolean;
   exposed: boolean;
   moveTarget: boolean;
-  /** Enemy waters: a square the enemy ship could still be on (rules 5.2/5.4). */
+  /** Enemy board: a square the enemy ship could still be on (rules 5.2/5.4). */
   hint: boolean;
   /** Rotation (deg) of the move arrow — points away from the ship. */
   moveDir: number;
@@ -30,6 +32,33 @@ interface BoardVM {
   id: PlayerId;
   mine: boolean;
   cells: CellVM[];
+  /** Rule 6: 100 → 50 on the first hit → −10 per move → 0 = wrecked. */
+  health: number;
+  /** The colour that health paints everything in (rule 6.4 / rule 10.3). */
+  color: string;
+  /** Rule 10.5: 1 all game, 0 once this ship is wrecked. */
+  ships: number;
+}
+
+/**
+ * Rule 6.4's ladder: green while whole, orange from the first hit, and
+ * closer to the wreck's red with every 10% burnt away.
+ */
+const HEALTH_COLORS: Record<number, string> = {
+  100: '#48e295',
+  50: '#ffb03c',
+  40: '#ff9a33',
+  30: '#ff8730',
+  20: '#ff732b',
+  10: '#ff6128',
+  0: '#ff5c4a',
+};
+
+export function healthColor(health: number): string {
+  const step = Math.max(0, Math.min(100, Math.round(health / 10) * 10));
+  // 60–90% can only be reached by a rules change; treat anything above the
+  // first hit as untouched rather than leaving the colour undefined.
+  return HEALTH_COLORS[step] ?? (step > 50 ? HEALTH_COLORS[100] : HEALTH_COLORS[50]);
 }
 
 /**
@@ -153,7 +182,7 @@ export class Game {
     () => this.game.scores()[this.session.myPlayer() === 0 ? 1 : 0],
   );
 
-  // Each device shows its own perspective: enemy waters on top, own fleet below.
+  // Each device shows its own perspective: the enemy ship's board on top, own below.
   protected readonly boards = computed<BoardVM[]>(() => {
     const me = this.session.myPlayer();
     const enemy: PlayerId = me === 0 ? 1 : 0;
@@ -169,13 +198,15 @@ export class Game {
       case 'placement':
         return this.game.players()[me].ship
           ? 'Waiting for your opponent to place their ship…'
-          : 'Tap your fleet board to place your ship';
+          : 'Tap your own board to place your ship';
       case 'fire':
-        return this.myTurn() ? 'Fire! Tap a square in enemy waters' : 'Enemy is taking aim…';
+        return this.myTurn() ? 'Fire! Tap a square on the enemy board' : 'Enemy is taking aim…';
       case 'move':
-        return this.myTurn()
-          ? 'Your position is exposed — move your ship one square'
-          : 'Enemy ship is repositioning…';
+        if (!this.myTurn()) return 'Enemy ship is repositioning…';
+        // Rule 6.3: moving while on fire costs another 10%.
+        return this.game.players()[me].health < 100
+          ? 'Move one square — the fire costs you 10%'
+          : 'Your position is exposed — move your ship one square';
       case 'gameover':
         return this.game.winner() === me
           ? 'Victory! Enemy ship destroyed'
@@ -205,7 +236,7 @@ export class Game {
     const state = this.game.players()[id];
     const gameover = this.game.phase() === 'gameover';
     // Rule 4: the ship is not visible to the opposing player (until it's hit
-    // or the game is over, when both fleets are revealed).
+    // or the game is over, when both ships are revealed).
     const showShip = mine || gameover || state.shipDestroyed;
     const moveTargets =
       mine && this.game.phase() === 'move' && this.myTurn() ? this.game.legalMoves(id) : [];
@@ -233,6 +264,7 @@ export class Game {
           destroyed: state.destroyed[y * BOARD_W + x],
           hasShip: shipVisible,
           shipDestroyed: hasShip && state.shipDestroyed,
+          burning: shipVisible && !state.shipDestroyed && state.health < 100,
           // The exposure reticle yields only to a ship actually drawn in the cell —
           // the enemy must see the exposure even while the ship still sits there.
           exposed: state.exposedAt?.x === x && state.exposedAt.y === y && !shipVisible,
@@ -245,7 +277,14 @@ export class Game {
         });
       }
     }
-    return { id, mine, cells };
+    return {
+      id,
+      mine,
+      cells,
+      health: state.health,
+      color: healthColor(state.health),
+      ships: state.shipDestroyed ? 0 : 1,
+    };
   }
 
   /**

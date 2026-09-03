@@ -60,6 +60,7 @@
           [id]="(board.mine ? 'fleet' : 'enemy') + '-board-wrap'"
           class="board-wrap"
           [class.active]="isActiveBoard(board)"
+          [style.--ship-color]="board.color"
         >
           <div class="board-head">
             <h2 [id]="(board.mine ? 'fleet' : 'enemy') + '-board-title'">
@@ -71,7 +72,7 @@
                   <path d="M8.4 11h7.2" />
                   <path d="M5 13.5H2.5a9.5 9.5 0 0 0 19 0H19" />
                 </svg>
-                Your fleet
+                Your ship
               } @else {
                 <svg class="head-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -79,9 +80,17 @@
                   <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4" />
                   <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
                 </svg>
-                Enemy waters
+                Enemy ship
               }
             </h2>
+
+            <!-- Rule 10.5: one ship each, all game — and 0 the moment it sinks,
+                 so nobody reads this as the classic fleet game. -->
+            <span
+              [id]="(board.mine ? 'fleet' : 'enemy') + '-ship-count'"
+              class="ship-count"
+            >{{ board.ships }}</span>
+
             <span
               [id]="(board.mine ? 'fleet' : 'enemy') + '-board-hint'"
               class="tap-cue"
@@ -94,6 +103,7 @@
               </svg>
             </span>
           </div>
+          <div class="board-row">
           <div [id]="(board.mine ? 'fleet' : 'enemy') + '-board'" class="board">
             @for (cell of board.cells; track $index) {
               <button
@@ -101,6 +111,7 @@
                 class="cell"
                 [class.destroyed]="cell.destroyed"
                 [class.ship]="cell.hasShip && !cell.shipDestroyed"
+                [class.burning]="cell.burning"
                 [class.ship-destroyed]="cell.shipDestroyed"
                 [class.exposed]="cell.exposed"
                 [class.move-target]="cell.moveTarget"
@@ -167,6 +178,35 @@
                 }
               </button>
             }
+          </div>
+
+          <!-- Rule 10: the ship's health, vertical, alongside its own board.
+               Live from the first second at 100% (rule 10.1) so both players
+               know there is a health factor before a shot is fired. -->
+          <div
+            [id]="(board.mine ? 'fleet' : 'enemy') + '-health'"
+            class="health"
+            role="meter"
+            [attr.aria-valuenow]="board.health"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            [attr.aria-label]="(board.mine ? 'Your' : 'Enemy') + ' ship health'"
+          >
+            <svg class="health-ship" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3.6v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none" />
+              <path d="M12 3.9l3.4 1.2L12 6.3Z" fill="currentColor" />
+              <path d="M9 8.6h6v3.4H9Z" fill="currentColor" />
+              <path d="M5.4 12v-1.6M4 12h2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+              <path
+                fill="currentColor"
+                d="M2.9 13.2h18.2c.5 0 .8.55.55 1l-2.1 3.8a2 2 0 0 1-1.75 1.03H6.2a2 2 0 0 1-1.75-1.03l-2.1-3.8c-.25-.45.08-1 .55-1Z"
+              />
+            </svg>
+            <span class="health-tube">
+              <span class="health-fill" [style.height.%]="board.health"></span>
+            </span>
+            <span class="health-value">{{ board.health }}%</span>
+          </div>
           </div>
         </section>
       }

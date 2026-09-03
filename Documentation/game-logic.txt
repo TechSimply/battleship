@@ -54,6 +54,19 @@ if both leave stale_nonoccupied_link_live_time applies
 if any of them pressed id="leave-btn" than the link terminates
 
 10. Ship health display
-10.1. The side panel shows the ship's health as a percentage together with the ship colour.
-10.2. The percentage is painted in the colour the ship currently has, so it goes from
-healthy through orange to almost red as the ship burns down.
+10.1. Both healths - mine and the enemy's - are on screen from the very first moment of
+the game, at 100%, before anything is placed or fired. Players should see straight away
+that there is a health factor and that each side has only one ship.
+10.2. Each health is shown as a vertical bar on the right hand side of the board it belongs
+to: the enemy's bar next to the enemy board, mine next to my own board, each parallel to
+its board and centred on it, about half the height of the board.
+10.2.1. The wording on screen must never suggest a fleet or several ships - this is a duel
+of one ship against one ship, so the boards read "Your ship" and "Enemy ship".
+10.3. The bar carries the little ship icon in the ship's current colour, and the percentage,
+so the ship and the number always match the colour of the ship on the board.
+10.4. The bar fills from the bottom and empties downwards as the health falls, and its
+colour follows rule 6.4 - green at 100%, orange at 50%, almost red at 10%.
+10.5. Next to each board label there is a ship counter, so nobody mistakes this for the
+classic battleship game with a fleet: it says 1 for the whole game and turns 0 the moment
+that ship is wrecked. It is painted in the ship's current colour like everything else.
+10.6. Showing the health reveals nothing about where a ship is - only how hurt it is.

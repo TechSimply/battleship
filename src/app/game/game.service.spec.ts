@@ -23,6 +23,46 @@ describe('GameService', () => {
     click(1, p2);
   }
 
+  /**
+   * Play one whole turn for `player` without hitting anybody: fire at a square
+   * the enemy ship provably is not on, then take the forced move. Used by the
+   * burn-down tests, where the point is the fire (rule 6.3), not the shooting.
+   */
+  function playSafeTurn(player: PlayerId) {
+    const enemy: PlayerId = player === 0 ? 1 : 0;
+    const state = game.players()[enemy];
+    const target = allSquares().find(
+      (c) =>
+        !state.destroyed[c.y * BOARD_W + c.x] &&
+        !(state.ship!.x === c.x && state.ship!.y === c.y),
+    )!;
+    game.apply({ kind: 'fire', player, c: target });
+    if (game.phase() === 'move') {
+      game.apply({ kind: 'move', player, c: game.legalMoves(player)[0] });
+    }
+  }
+
+  /**
+   * Wreck the enemy of `shooter` the short way: a hit puts them on 50%
+   * (rule 6.2) and a second one finishes them (rule 6.5). Between the two the
+   * other player takes an ordinary, harmless turn.
+   */
+  function sink(shooter: PlayerId) {
+    const enemy: PlayerId = shooter === 0 ? 1 : 0;
+    game.apply({ kind: 'fire', player: shooter, c: game.players()[enemy].ship! });
+    if (game.phase() === 'move') {
+      game.apply({ kind: 'move', player: shooter, c: game.legalMoves(shooter)[0] });
+    }
+    playSafeTurn(enemy);
+    game.apply({ kind: 'fire', player: shooter, c: game.players()[enemy].ship! });
+  }
+
+  function allSquares(): Coord[] {
+    const all: Coord[] = [];
+    for (let y = 0; y < BOARD_W; y++) for (let x = 0; x < BOARD_W; x++) all.push({ x, y });
+    return all;
+  }
+
   it('starts in placement with player 1', () => {
     expect(game.phase()).toBe('placement');
     expect(game.currentPlayer()).toBe(0);
@@ -62,11 +102,66 @@ describe('GameService', () => {
     expect(action).toEqual({ kind: 'place', player: 1, c: { x: 3, y: 3 } });
   });
 
-  it('ends the game when a ship is hit (rule 6)', () => {
+  it('sets a hit ship on fire at 50% instead of sinking it (rule 6.2)', () => {
     placeBothShips();
     click(1, { x: 3, y: 3 }); // direct hit
+    expect(game.players()[1].health).toBe(50);
+    expect(game.players()[1].shipDestroyed).toBe(false);
+    expect(game.phase()).toBe('move'); // the shooter still has to move (rule 5.4)
+    expect(game.winner()).toBeNull();
+  });
+
+  it('burns 10% off a hit ship with every move it makes (rule 6.3)', () => {
+    placeBothShips({ x: 0, y: 0 }, { x: 2, y: 2 });
+    click(1, { x: 2, y: 2 }); // p1 hits p2 -> 50%
+    click(0, { x: 1, y: 1 }); // p1 must move
+    expect(game.players()[1].health).toBe(50); // the fire costs p2, not p1
+
+    click(0, { x: 0, y: 1 }); // p2 fires, misses
+    click(1, { x: 3, y: 3 }); // p2 moves while burning
+    expect(game.players()[1].health).toBe(40);
+    expect(game.players()[0].health).toBe(100); // p1 was never hit
+  });
+
+  it('wrecks a burning ship once its health reaches 0% (rule 6.6)', () => {
+    placeBothShips({ x: 0, y: 0 }, { x: 2, y: 2 });
+    click(1, { x: 2, y: 2 }); // p1 hits p2 -> 50%
+    click(0, { x: 1, y: 1 }); // p1 moves
+
+    // From here neither side lands another hit — p2 simply burns down 10% per
+    // move until there is nothing left: 40, 30, 20, 10, 0.
+    const burnt: number[] = [];
+    for (let turn = 0; turn < 6 && game.phase() !== 'gameover'; turn++) {
+      playSafeTurn(1);
+      burnt.push(game.players()[1].health);
+      if (game.phase() === 'gameover') break;
+      playSafeTurn(0);
+    }
+
+    expect(burnt).toEqual([40, 30, 20, 10, 0]);
+    expect(game.players()[0].health).toBe(100); // p1 was never hit
+    expect(game.players()[1].health).toBe(0);
+    expect(game.players()[1].shipDestroyed).toBe(true);
+    expect(game.phase()).toBe('gameover');
+    expect(game.winner()).toBe(0); // the ship that was never hit wins
+  });
+
+  it('finishes a burning ship outright on a second hit (rule 6.5)', () => {
+    placeBothShips({ x: 0, y: 0 }, { x: 2, y: 2 });
+    click(1, { x: 2, y: 2 }); // hit -> 50%
+    click(0, { x: 1, y: 1 }); // p1 moves
+    click(0, { x: 0, y: 3 }); // p2 fires, misses
+    click(1, { x: 3, y: 3 }); // p2 moves -> 40%
+    click(1, { x: 3, y: 3 }); // p1 hits the burning ship again
+    expect(game.players()[1].health).toBe(0);
     expect(game.phase()).toBe('gameover');
     expect(game.winner()).toBe(0);
+  });
+
+  it('starts both ships at full health (rule 6.1)', () => {
+    expect(game.players().map((p) => p.health)).toEqual([100, 100]);
+    placeBothShips();
+    expect(game.players().map((p) => p.health)).toEqual([100, 100]);
   });
 
   it('marks the bombed square unusable and exposes the shooter on a miss (rules 5.2, 5.3)', () => {
@@ -195,28 +290,27 @@ describe('GameService', () => {
     game.apply({ kind: 'place', player: 0, c: { x: 0, y: 0 } });
     game.apply({ kind: 'place', player: 1, c: { x: 3, y: 3 } });
     game.apply({ kind: 'fire', player: 0, c: { x: 3, y: 3 } });
-    expect(game.phase()).toBe('gameover');
-    expect(game.winner()).toBe(0);
+    expect(game.players()[1].health).toBe(50);
+    expect(game.phase()).toBe('move');
   });
 
   it('scores one point for the winner and keeps it across a rematch (rule 8)', () => {
     placeBothShips();
-    click(1, { x: 3, y: 3 }); // player 1 hits player 2
+    sink(0); // player 1 hits player 2 twice
     expect(game.scores()).toEqual([1, 0]);
 
     game.apply({ kind: 'reset' }); // "play again" keeps the score
     expect(game.scores()).toEqual([1, 0]);
 
     placeBothShips({ x: 1, y: 1 }, { x: 2, y: 2 });
-    click(1, { x: 0, y: 0 }); // player 1 fires at enemy waters, misses
-    click(0, { x: 0, y: 0 }); // player 1 (exposed) moves onto (0,0)
-    click(0, { x: 0, y: 0 }); // player 2 fires at (0,0) and sinks player 1
+    playSafeTurn(0); // player 1 fires at empty water and moves
+    sink(1); // player 2 burns player 1 down instead
     expect(game.scores()).toEqual([1, 1]);
   });
 
   it('clears the score for a fresh session', () => {
     placeBothShips();
-    click(1, { x: 3, y: 3 });
+    sink(0);
     expect(game.scores()).toEqual([1, 0]);
     game.resetScores();
     expect(game.scores()).toEqual([0, 0]);
@@ -224,10 +318,11 @@ describe('GameService', () => {
 
   it('resets to a fresh game', () => {
     placeBothShips();
-    click(1, { x: 3, y: 3 });
+    sink(0);
     game.apply({ kind: 'reset' });
     expect(game.phase()).toBe('placement');
     expect(game.currentPlayer()).toBe(0);
     expect(game.players()[0].ship).toBeNull();
+    expect(game.players().map((p) => p.health)).toEqual([100, 100]);
   });
 });

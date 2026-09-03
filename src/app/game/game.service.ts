@@ -21,9 +21,21 @@ export type GameAction =
   | { kind: 'move'; player: PlayerId; c: Coord }
   | { kind: 'reset' };
 
+/** Rule 6.1: every ship starts the game whole. */
+export const FULL_HEALTH = 100;
+/** Rule 6.2: the first hit halves it — on fire, not wrecked. */
+export const HIT_HEALTH = 50;
+/** Rule 6.3: a burning ship loses this much on each of its own moves. */
+export const BURN_PER_MOVE = 10;
+
 export interface PlayerState {
   /** Each player has exactly one ship; null until placed. */
   ship: Coord | null;
+  /**
+   * Rule 6: 100 while untouched, 50 from the first hit, then 10 less with
+   * every move this player makes, and 0 = wrecked (that player loses).
+   */
+  health: number;
   shipDestroyed: boolean;
   /** Square the opponent saw when this player last fired (rule 5.2). */
   exposedAt: Coord | null;
@@ -37,6 +49,7 @@ const sameCell = (a: Coord, b: Coord) => a.x === b.x && a.y === b.y;
 function emptyPlayer(): PlayerState {
   return {
     ship: null,
+    health: FULL_HEALTH,
     shipDestroyed: false,
     exposedAt: null,
     destroyed: Array(BOARD_W * BOARD_H).fill(false),
@@ -195,18 +208,15 @@ export class GameService {
       const destroyed = [...p.destroyed];
       destroyed[idx(c)] = true;
       const hit = !!p.ship && sameCell(p.ship, c);
-      return { ...p, destroyed, shipDestroyed: p.shipDestroyed || hit };
+      // Rule 6.2: the first hit takes the ship to 50% and sets it on fire.
+      // Rule 6.5: a hit on a ship that is already burning finishes it.
+      const health = hit ? (p.health > HIT_HEALTH ? HIT_HEALTH : 0) : p.health;
+      return { ...p, destroyed, health, shipDestroyed: p.shipDestroyed || health === 0 };
     });
 
-    // Rule 6: if the ship is hit, game over. Rule 8: winner scores a point.
+    // Rule 6.6: at 0% that player loses. Rule 8: the winner scores a point.
     if (this.players()[enemy].shipDestroyed) {
-      this.winner.set(shooter);
-      this.scores.update((s) => {
-        const next: [number, number] = [...s];
-        next[shooter] += 1;
-        return next;
-      });
-      this.phase.set('gameover');
+      this.endGame(shooter);
       return true;
     }
 
@@ -225,9 +235,33 @@ export class GameService {
   private moveTo(player: PlayerId, c: Coord): boolean {
     if (this.phase() !== 'move' || player !== this.currentPlayer()) return false;
     if (!this.legalMoves(player).some((m) => sameCell(m, c))) return false;
-    this.updatePlayer(player, (p) => ({ ...p, ship: c }));
+
+    // Rule 6.3: a burning ship loses another 10% every time it moves — sailing
+    // on fans the flames. An untouched ship moves for free.
+    this.updatePlayer(player, (p) => {
+      const health = p.health < FULL_HEALTH ? Math.max(p.health - BURN_PER_MOVE, 0) : p.health;
+      return { ...p, ship: c, health, shipDestroyed: p.shipDestroyed || health === 0 };
+    });
+
+    // Rule 6.6: burning down to 0% loses the game for its owner.
+    if (this.players()[player].shipDestroyed) {
+      this.endGame(player === 0 ? 1 : 0);
+      return true;
+    }
+
     this.endTurn();
     return true;
+  }
+
+  /** Rule 6.6 + rule 8: the round is over and the winner takes a point. */
+  private endGame(winner: PlayerId): void {
+    this.winner.set(winner);
+    this.scores.update((s) => {
+      const next: [number, number] = [...s];
+      next[winner] += 1;
+      return next;
+    });
+    this.phase.set('gameover');
   }
 
   private endTurn(): void {

@@ -335,6 +335,10 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
 }
 
 .board-wrap {
+  // Width of the health rail beside the board (rule 10.2), shared with the
+  // header above it so the two line up.
+  --health-rail: 2.4em;
+
   flex: none;
   padding: 0.45em 0.5em 0.5em;
   background: $panel;
@@ -368,13 +372,24 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   filter: saturate(0.65);
 }
 
+// Rule 10.2: the board and its health rail side by side, the rail parallel to
+// the board it belongs to. The rail's width is part of what `fitBoards()`
+// measures as panel chrome (it reads `.board-wrap` against `.board`), so the
+// boards shrink to make room for it instead of overflowing.
+.board-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.45em;
+}
+
 // Board title on the left, turn cue on the right — one tidy row.
 .board-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.4em;
-  width: var(--board-size);
+  width: calc(var(--board-size) + var(--health-rail) + 0.45em);
   margin: 0 auto 0.32em;
   min-height: 1.25em;
 
@@ -399,6 +414,70 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     height: 1.05em;
     flex: none;
     opacity: 0.85;
+  }
+}
+
+// Rule 10.5: how many ships this side still has — 1 all game, 0 once wrecked.
+// The whole point is that this game is a duel, not a fleet, so it sits right
+// next to the board's name and wears the ship's own colour.
+.ship-count {
+  flex: none;
+  margin-right: auto;
+  padding: 0 0.4em;
+  font-size: 0.68em;
+  font-weight: 800;
+  line-height: 1.5;
+  color: var(--ship-color, #{$fleet-green});
+  border-radius: 0.35em;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+// Rule 10.2/10.4: a vertical health gauge beside the board, about half its
+// height and centred on it, filling from the bottom and draining downwards.
+.health {
+  flex: none;
+  width: var(--health-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3em;
+  color: var(--ship-color, #{$fleet-green});
+
+  .health-ship {
+    width: 1.25em;
+    height: 1.25em;
+    filter: drop-shadow(0 0 6px currentColor);
+  }
+
+  .health-tube {
+    position: relative;
+    width: 0.62em;
+    // Half the board (rule 10.2), less the icon and the reading above and below.
+    height: calc(var(--board-size) * 0.5);
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: inset 0 0 0 1px currentColor;
+  }
+
+  .health-fill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: currentColor;
+    box-shadow: 0 0 10px currentColor;
+    transition:
+      height 0.45s ease,
+      background-color 0.45s ease;
+  }
+
+  .health-value {
+    font-size: 0.66em;
+    font-weight: 800;
+    letter-spacing: 0.02em;
   }
 }
 
@@ -610,6 +689,47 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
     }
   }
 
+  // Rule 6.2/6.4: hit but still afloat. The ship keeps its shape and takes the
+  // colour of its health — orange at 50%, nearly the wreck's red at 10% — with
+  // a flame standing on it so it reads as burning, not merely tinted.
+  &.ship.burning {
+    color: var(--ship-color, #{$expose-amber});
+    background: radial-gradient(
+      circle at 50% 45%,
+      color-mix(in srgb, var(--ship-color, #{$expose-amber}) 28%, transparent),
+      transparent 76%
+    );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--ship-color, #{$expose-amber}) 60%, transparent),
+      inset 0 0 16px color-mix(in srgb, var(--ship-color, #{$expose-amber}) 22%, transparent);
+
+    .icon {
+      filter: drop-shadow(0 0 9px currentColor);
+    }
+
+    // The fire itself, licking up off the deck.
+    &::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      bottom: 52%;
+      width: 16%;
+      height: 34%;
+      transform: translateX(-50%);
+      border-radius: 50% 50% 46% 46%;
+      filter: blur(0.6px);
+      background: linear-gradient(
+        to top,
+        rgba(255, 120, 30, 0) 0%,
+        rgba(255, 120, 30, 0.75) 40%,
+        rgba(255, 178, 70, 0.95) 78%,
+        rgba(255, 240, 205, 1) 100%
+      );
+      animation: ship-burn 0.9s ease-in-out infinite;
+      pointer-events: none;
+    }
+  }
+
   // Direct hit — game over.
   &.ship-destroyed {
     color: #ff7a5c;
@@ -724,6 +844,19 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
   50% {
     transform: translateY(4%) rotate(1.2deg);
+  }
+}
+
+// The fire on a hit ship: never still, never regular.
+@keyframes ship-burn {
+  0%,
+  100% {
+    transform: translateX(-50%) scaleY(1) scaleX(1);
+    opacity: 0.95;
+  }
+  50% {
+    transform: translateX(-50%) scaleY(0.74) scaleX(1.12) translateY(6%);
+    opacity: 0.8;
   }
 }
 
@@ -910,6 +1043,9 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   .cell.hint,
   .cell.destroyed::after,
   .cell.ship-destroyed,
+  // The flame on a burning ship is state (rule 6.2): keep it, hold it still.
+  .cell.ship.burning::before,
+  .health-fill,
   .shell,
   .shell::before,
   // The trail is state, not decoration — it stays drawn, it just stops burning.

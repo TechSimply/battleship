@@ -14,7 +14,14 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - Then alternating fire: firing **exposes** the square you fired from (rule 5.2), the bombed
   square becomes **permanently unusable** (rule 5.3), and after firing you **must move** one
   square if any usable neighbour remains (rule 5.4).
-- First ship hit **loses** (rule 6).
+- **Health (rule 6):** a ship starts at 100%. The first hit does not sink it — it drops to
+  **50%** and catches fire (orange); every **move** its owner then makes burns another
+  **10%** off, and the colour slides from orange towards the wreck's red. A second hit takes
+  it straight to 0%. At **0% that player loses** and the ship plays the shipwreck animation.
+- **Health display (rule 10):** both healths are on screen from the first second, as a
+  vertical gauge beside each board (about half its height), with the little ship icon and the
+  percentage in the ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so
+  nobody reads this as the classic fleet game. On-screen wording never says "fleet".
 - **Sessions (rule 7):** a lobby offers *New Game* / *Join The Game*. New Game claims the
   lowest free `Battle{n}` id; the opponent joins by typing that id.
 - **Scoring (rule 8):** within a session, one victory = one point; score persists across
@@ -120,7 +127,11 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
   short thinking delay whenever the game waits on player 1.
 - `src/app/game/` — per-player game view: shows only this device's perspective; the enemy ship
-  is hidden until it is hit or the game ends. It is a fixed, viewport-sized column
+  is hidden until it is wrecked or the game ends — a *burning* enemy is never drawn on the
+  board, since revealing its square each turn would make finishing it trivial; its damage
+  shows only in the health gauge. Health colours live in `healthColor()` (game.ts) and reach
+  the CSS as `--ship-color` on the board panel, so gauge, ship icon, counter and the flame on
+  the deck are always the same colour. It is a fixed, viewport-sized column
   that never scrolls: one dense top row (game id · score · leave), the status pill,
   then the boards taking all the space that's left. `fitBoards()` measures that
   leftover space after every render (and on resize/rotation) and sets `--board-size`,
