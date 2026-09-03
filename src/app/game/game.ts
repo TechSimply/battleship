@@ -239,8 +239,13 @@ export class Game {
           ? 'Move one square — the fire costs you 10%'
           : 'Your position is exposed — move your ship one square';
       case 'gameover':
-        // Rule 11.2: a ram wrecks both ships and scores for neither.
-        if (this.game.rammed()) return 'You rammed each other — no point for anyone';
+        // Rule 11.2: a ram wrecks both ships and scores for neither. A ram with
+        // no approach is rule 11.5 — both players picked the same square.
+        if (this.game.rammed()) {
+          return this.game.lastRam()?.from
+            ? 'You rammed each other — no point for anyone'
+            : 'You both started on the same square — no point for anyone';
+        }
         return this.game.winner() === me
           ? 'Victory! Enemy ship destroyed'
           : 'Your ship was destroyed';

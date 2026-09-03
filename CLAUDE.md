@@ -24,7 +24,8 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   (the hulls run together along the rammer's own course, then flash, ring and shake) rather
   than the ordinary sinking. It is settled *before*
   the fire, so a ship at 10% that rams draws instead of losing. Placing both ships on the same
-  square is the same thing, before the first shot.
+  square is the same thing, before the first shot (rule 11.5) — deliberately not prevented,
+  since "that square is taken" would tell player 2 exactly where player 1 is.
 - **Health display (rule 10):** both healths are on screen from the first second, as two
   horizontal gauges above the board, with the little ship icon and the percentage in the
   ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so nobody reads this

@@ -84,3 +84,6 @@ shockwave, and the square itself shakes. It must not look like the ordinary sink
 11.4. The collision is settled before the fire is: a burning ship that rams on the very move
 that would have taken it to 0% does not lose - the round is a draw. So a player never loses
 on the last step of their own fire.
+11.5. Placement is simultaneous and hidden, so both players can pick the same starting square.
+That is a ram too - both wrecked, no point, before a single shot. It is not prevented: telling
+the second player "that square is taken" would tell them exactly where the first one is.
