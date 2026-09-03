@@ -85,7 +85,9 @@ export function healthColor(health: number): string {
 }
 
 /**
- * A rocket's burning exhaust, left on screen until its owner fires again.
+ * A rocket's burning exhaust. The enemy's is left on screen until they fire
+ * again; your own is only the animation of your own shot and burns out after
+ * `OWN_TRAIL_MS` (rule 5.5).
  * `from`/`to` are kept so the trail can be re-measured when the boards resize;
  * `transform`/`width` are what the template actually draws.
  */
@@ -136,6 +138,13 @@ const FIT_SLACK = 1;
 const FIT_PASSES = 3;
 /** How long the hit flash stays on the square, in ms (the shell lands at ~300). */
 const IMPACT_MS = 1400;
+/**
+ * Rule 5.5: how long your own flame lives, in ms, measured from the launch.
+ * It tells you nothing you don't already know — you fired it — so it fades out
+ * and leaves the board carrying exactly one standing flame: the enemy's.
+ * Keep in step with the `trail-fade` animation in game.scss.
+ */
+const OWN_TRAIL_MS = 1000;
 
 @Component({
   selector: 'app-game',
@@ -150,13 +159,15 @@ export class Game {
   private readonly destroyRef = inject(DestroyRef);
 
   /**
-   * At most one burning trail per player — the newest rocket replaces it.
-   * Rendered from the template (not appended by hand) so the component's
-   * emulated style encapsulation actually reaches the flame.
+   * At most one burning trail per player — the newest rocket replaces it — and
+   * in practice only the enemy's stands for long (rule 5.5). Rendered from the
+   * template (not appended by hand) so the component's emulated style
+   * encapsulation actually reaches the flame.
    */
   protected readonly trails = signal<TrailVM[]>([]);
   protected readonly rocket = signal<RocketVM | null>(null);
   private rocketTimer?: ReturnType<typeof setTimeout>;
+  private ownTrailTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * Rule 6.2's moment: a shot that found a ship. The struck hull flashes into
@@ -210,6 +221,7 @@ export class Game {
       removeEventListener('orientationchange', refit);
       visualViewport?.removeEventListener('resize', refit);
       clearTimeout(this.rocketTimer);
+      clearTimeout(this.ownTrailTimer);
       clearTimeout(this.impactTimer);
     });
   }
@@ -486,8 +498,9 @@ export class Game {
 
   /**
    * Fly a rocket across the boards and leave its exhaust burning behind it.
-   * State markers land with a matching delay; the trail stays put until the
-   * same player fires again (each shooter owns exactly one trail).
+   * State markers land with a matching delay. The enemy's trail stays put until
+   * they fire again (each shooter owns exactly one trail); your own burns out a
+   * second after the launch, per rule 5.5.
    */
   private animateShot(shot: {
     shooter: PlayerId;
@@ -521,6 +534,20 @@ export class Game {
         growing: !still,
       },
     ]);
+
+    // Rule 5.5: your own flame is the tracer of your own shot, nothing more —
+    // you already know the square you fired from. It fades out (the `trail-fade`
+    // animation in game.scss) and is dropped here on the same beat, so the only
+    // flame left standing on the board is the enemy's last shot. Under reduced
+    // motion nothing fades, but this still takes it off at the same moment.
+    if (mine) {
+      clearTimeout(this.ownTrailTimer);
+      this.ownTrailTimer = setTimeout(
+        () => this.trails.update((trails) => trails.filter((t) => t.id !== shot.n)),
+        OWN_TRAIL_MS,
+      );
+    }
+
     if (still) return; // the standing trail tells the story; nothing flies
 
     clearTimeout(this.rocketTimer);
@@ -584,6 +611,7 @@ export class Game {
   }
 
   private clearTrails(): void {
+    clearTimeout(this.ownTrailTimer);
     this.trails.set([]);
     this.rocket.set(null);
   }

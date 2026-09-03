@@ -184,8 +184,11 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   the fit ends by measuring the panels as they were actually laid out and handing back
   any overflow, instead of trusting its own model of the chrome.
   Firing flies a rocket from the shooter's square to the bombed square and leaves its
-  burning exhaust behind: one trail per player, replaced only by that same player's next
-  shot. Rocket and trails are rendered from the template (never `createElement` — the
+  burning exhaust behind. **Only the enemy's flame stands** (rule 5.5): theirs burns from
+  their shot until their next one, so the square they fired from keeps saying so, while
+  your own — which tells you nothing you didn't already know — fades out and is dropped
+  a second after the launch (`OWN_TRAIL_MS` in `game.ts`, the `trail-fade` animation in
+  `game.scss`; keep the two in step). Rocket and trails are rendered from the template (never `createElement` — the
   component's emulated encapsulation would not style hand-made elements) and anchored to
   cell centres in pixels, so `fitAndRealign()` re-measures them after every refit.
   On your fire turn, enemy waters also mark the squares their ship must be on —

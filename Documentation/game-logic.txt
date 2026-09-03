@@ -20,6 +20,12 @@ the ships hould not be visible to the oposing player.
 5.3. Where the bomb is fired that square is not usable any more - for either ship,
 the board is shared
 5.4. Player which fires should move per rules: 3. , 5.3.
+5.5. The shot flies from the square it was fired from to the square it bombs and leaves a
+burning trail behind it. Only the enemy's trail stands: it stays lit from their shot until
+their next one, so the square they fired from (rule 5.2) keeps burning while it matters.
+Your own trail is only the animation of your own shot - you already know where you fired
+from - so it fades away one second after the launch. At any moment there is at most one
+standing flame on the board and it is the enemy's.
 6. Ship health
 6.1. Every ship starts the game with 100% health.
 6.2. The first hit on a ship does not sink it: its health drops to 50% and the ship

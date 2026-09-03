@@ -338,6 +338,19 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
 }
 
+// Rule 5.5: only the enemy's flame stands. Your own says nothing you don't
+// already know — you fired it — so once the rocket has landed it burns down to
+// nothing, gone one second after the launch. The fade is listed last so it wins
+// the opacity over the smoulder underneath it, and game.ts drops the element on
+// the same beat. Keep $own-trail-life in step with OWN_TRAIL_MS there.
+$own-trail-life: 1s;
+
+.trail.mine {
+  animation:
+    trail-smoulder 2.4s ease-in-out $flight infinite,
+    trail-fade ($own-trail-life - $flight) ease-in $flight forwards;
+}
+
 .board-wrap {
   flex: none;
   padding: 0.45em 0.5em 0.5em;
@@ -1308,6 +1321,17 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   }
 }
 
+// Your own flame burning itself out (rule 5.5). It takes the ember on `::after`
+// with it — the opacity is on the element they both sit in.
+@keyframes trail-fade {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 @keyframes ember-flicker {
   0%,
   100% {
@@ -1360,8 +1384,10 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   .health-fill,
   .shell,
   .shell::before,
-  // The trail is state, not decoration — it stays drawn, it just stops burning.
+  // The enemy's trail is state, not decoration — it stays drawn, it just stops
+  // burning. Your own (rule 5.5) simply goes when game.ts drops it, no fade.
   .trail,
+  .trail.mine,
   .trail::after {
     animation: none;
     transition: none;
