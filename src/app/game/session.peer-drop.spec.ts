@@ -66,6 +66,13 @@ class FakePeer {
     return conn;
   }
 
+  /** Somebody knocks on the id we are hosting. */
+  incoming(): FakeConn {
+    const conn = new FakeConn();
+    this.emit('connection', conn);
+    return conn;
+  }
+
   /** The broker has no such id right now — the host's app is asleep. */
   peerUnavailable(): void {
     this.emit(
@@ -113,21 +120,47 @@ class FakePeer {
 class FakeConn {
   private handlers: Record<string, ((arg?: unknown) => void)[]> = {};
   closed = false;
+  sent: { kind: string }[] = [];
 
   on(event: string, cb: (arg?: unknown) => void): this {
     (this.handlers[event] ??= []).push(cb);
     return this;
   }
 
+  private emit(event: string, arg?: unknown): void {
+    for (const cb of this.handlers[event] ?? []) cb(arg);
+  }
+
   close(): void {
     this.closed = true;
   }
 
-  send(): void {}
+  send(msg: { kind: string }): void {
+    this.sent.push(msg);
+  }
 
-  /** The host picked up. */
+  /** The channel opened and a live opponent said hello back. */
   accept(): void {
-    for (const cb of this.handlers['open'] ?? []) cb();
+    this.openOnly();
+    this.deliver({ kind: 'hello' });
+  }
+
+  /**
+   * The channel opened on this side alone — the invite-link ghost: whoever
+   * knocked has already walked away, so nothing ever comes back.
+   */
+  openOnly(): void {
+    this.emit('open');
+  }
+
+  /** A message arriving from the other side. */
+  deliver(msg: unknown): void {
+    this.emit('data', msg);
+  }
+
+  /** The channel died. */
+  drop(): void {
+    this.emit('close');
   }
 }
 
@@ -152,9 +185,28 @@ class FakeRegistry {
     this.presence = null;
     this.presenceRole = null;
   });
-  observe = vi.fn(() => () => {});
+  observe = vi.fn((n: number, cb: (rec: unknown) => void) => {
+    this.watchers.push(cb);
+    return () => {
+      this.watchers = this.watchers.filter((w) => w !== cb);
+    };
+  });
   serverNow = vi.fn(() => Date.now());
   bump = vi.fn();
+
+  private watchers: ((rec: unknown) => void)[] = [];
+
+  /** Player 2 heartbeats onto the link while they knock (rule 9). */
+  joinerOnLink(): void {
+    const rec = {
+      createdAt: Date.now(),
+      hostAt: Date.now(),
+      joinerAt: Date.now(),
+      joined: false,
+      terminated: false,
+    };
+    for (const w of [...this.watchers]) w(rec);
+  }
 }
 
 // Imported after vi.mock so the service picks up the fake Peer.
@@ -394,6 +446,106 @@ describe('a backgrounded host keeps its game', () => {
 
     expect(session.state()).toBe('joining');
     expect(peer.dials.length).toBe(2);
+  });
+
+  it('never hangs up on a host who picks up while an old knock expires', async () => {
+    // The bug that wedged invites for good. The broker answers an unanswered
+    // knock with "no such peer" about five seconds later, and that answer names
+    // no connection — so it can perfectly well belong to a knock we have
+    // already replaced. Letting it retire the knock in flight meant hanging up
+    // on the host at the exact moment they picked up.
+    const peer = await openTheLink();
+
+    await vi.advanceTimersByTimeAsync(11_500); // knock 1 times out, knock 2 goes
+    expect(peer.dials.length).toBe(2);
+
+    peer.peerUnavailable(); // the broker's late answer about knock 1
+    peer.dials.at(-1)!.accept(); // and the host picks up knock 2
+
+    expect(session.state()).toBe('playing');
+    expect(peer.dials.at(-1)!.closed).toBe(false);
+  });
+
+  it('keeps looking for the host when a pairing turns out to be empty', async () => {
+    // The other half of that bug, from player 2's side: a channel that opens on
+    // one side only is not a game, and reporting it as one ("opponent left")
+    // ends a join that had every chance of succeeding.
+    const peer = await openTheLink();
+    peer.dials[0].openOnly(); // opened, but nobody ever answers
+    expect(session.state()).toBe('playing');
+
+    await vi.advanceTimersByTimeAsync(7_000);
+
+    expect(session.state()).toBe('joining');
+    expect(session.waitingForHost()).toBe(true);
+    expect(peer.dials.length).toBeGreaterThan(1); // and it is knocking again
+  });
+
+  it('builds a fresh peer when its knocks vanish without an answer', async () => {
+    // A thawed webview can hand back a socket that is dead while PeerJS still
+    // reads it as open: knocks disappear into it and nothing ever errors.
+    // Knocking harder on it is the one thing that can never work.
+    const peer = await openTheLink();
+
+    await vi.advanceTimersByTimeAsync(11_500); // knock 1: no answer at all
+    expect(peer.dials.length).toBe(2);
+    await vi.advanceTimersByTimeAsync(11_500); // knock 2: same
+
+    const fresh = FakePeer.instances.at(-1)!;
+    expect(fresh).not.toBe(peer);
+    fresh.reachBroker();
+    expect(fresh.dials.length).toBe(1);
+    expect(session.state()).toBe('joining');
+  });
+
+  it('goes back to waiting when a knock pairs with nobody', async () => {
+    // The host's side of the ghost: the broker hands over an offer whose owner
+    // gave up on it, the channel opens here alone, and the host used to sit in
+    // a game with nobody in it — turning away every real knock that followed.
+    const peer = await hostAGame();
+    const id = session.gameId();
+    const ghost = peer.incoming();
+    ghost.openOnly();
+    expect(session.state()).toBe('playing');
+
+    await vi.advanceTimersByTimeAsync(7_000);
+
+    expect(session.state()).toBe('hosting');
+    expect(session.gameId()).toBe(id); // still the number that is in the chat
+    expect(ghost.closed).toBe(true);
+    expect(registry.markJoined).not.toHaveBeenCalled(); // the link never paired
+    expect(localStorage.getItem('battleship.hostedLink')).not.toBeNull();
+
+    // And the knock that follows is let in rather than refused as "game full".
+    peer.incoming().accept();
+    expect(session.state()).toBe('playing');
+    expect(registry.markJoined).toHaveBeenCalled();
+  });
+
+  it('takes its number again when knocks are not reaching it', async () => {
+    // Nothing errors when a host's broker socket dies quietly: the peer reads
+    // as open and the number looks claimed. The registry is what gives it
+    // away — player 2 heartbeats onto the link while they knock, so someone
+    // demonstrably there and not one knock arriving means our registration is
+    // the thing that is wrong.
+    const peer = await hostAGame();
+    const id = session.gameId();
+
+    registry.joinerOnLink();
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const rebuilt = FakePeer.instances.at(-1)!;
+    expect(rebuilt).not.toBe(peer);
+    rebuilt.reachBroker();
+    expect(session.state()).toBe('hosting');
+    expect(session.gameId()).toBe(id); // the same number the link points at
+  });
+
+  it('leaves a working host alone while nobody is on the link', async () => {
+    const peer = await hostAGame();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakePeer.instances.at(-1)).toBe(peer);
+    expect(session.state()).toBe('hosting');
   });
 
   it('does not kill the host’s link when player 2 cancels a knock', async () => {

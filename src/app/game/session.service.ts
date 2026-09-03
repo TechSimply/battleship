@@ -37,6 +37,30 @@ import { LobbyRegistryService, SessionRecord, SessionRole, isPartyPresent } from
  * opens the app. Only ever for a link that never paired up — once a game has
  * begun its state lives in the two browsers and cannot be resumed at all.
  *
+ * Two failures used to leave both players staring at a screen that would never
+ * change — one on "Waiting for opponent", the other on "Still knocking" — and
+ * neither reported an error anywhere, so none of the recovery below ever ran.
+ *
+ * The first is the knock that was thrown away. When the host is not on the
+ * broker, the broker queues the offer and answers `peer-unavailable` about five
+ * seconds later; that answer names no connection, so it can easily belong to a
+ * knock we have already given up on. Retiring the knock *in flight* on the
+ * strength of it meant that a host who picked up at that moment was hung up on
+ * — and, having opened their side, was left sitting in a game with nobody in
+ * it, turning away every knock that followed. So a channel that opens is now
+ * always taken, and a pairing has to prove itself: both sides say `hello`, and
+ * one that stays silent is dropped (`abandonPairing`) so the host goes back to
+ * waiting and the joiner back to knocking.
+ *
+ * The second is the socket that dies without saying so. A frozen webview can
+ * hand back a broker socket that no longer carries anything while PeerJS still
+ * reads it as open — knocks vanish into it, or arrive at a host whose
+ * registration is a ghost. Nothing errors, so nothing recovers. Both ends now
+ * notice by other means: the joiner counts knocks that got no answer at all
+ * (not even "no such peer") and builds a fresh peer after a couple, and the
+ * host, which can see player 2 heartbeat onto the link in the registry, takes
+ * its number again when someone is demonstrably there and no knock arrives.
+ *
  * Getting back on the broker is a *session*-level job, not a peer-level one.
  * PeerJS reconnects the peer it has when it can, but it also aborts and
  * discards peers (a socket that never carried an id, an id the broker is still
@@ -60,8 +84,17 @@ const MIN_GAME_ID = 1000;
 const MAX_GAME_ID = 9999;
 /** Give up after this many random collisions (the id space is ~9000 wide). */
 const MAX_CLAIM_ATTEMPTS = 50;
-/** Safety net for a handshake that stalls; an awake host answers in well under this. */
-const DIAL_TIMEOUT_MS = 5_000;
+/**
+ * Safety net for a handshake that stalls; an awake host answers in well under
+ * this. Deliberately longer than the broker's own patience: when the host is
+ * not on the broker, PeerJS server queues our offer and answers with `EXPIRE`
+ * (→ `peer-unavailable`) after about five seconds. With a five-second timeout
+ * of our own the two raced, so a knock could be abandoned and replaced at the
+ * exact moment the broker was still deciding — leaving stale errors landing on
+ * top of live knocks. Let the broker answer first; this is only for the case
+ * where it says nothing at all.
+ */
+const DIAL_TIMEOUT_MS = 9_000;
 /**
  * How long a joiner keeps knocking on a host it has heard nothing about. Long
  * enough to cover the usual shape of an invite: the host sends the link, their
@@ -77,6 +110,37 @@ const MAX_JOIN_WINDOW_MS = 5 * 60_000;
 const LINK_CHECK_MS = 8_000;
 /** Pause between knocks while the host's app is asleep. */
 const REDIAL_MS = 2_000;
+/**
+ * Knocks that got no answer at all — not even the broker's own "no such peer" —
+ * before we stop trusting our signalling socket and build a fresh peer. A phone
+ * that froze a webview can hand back a socket that is dead without PeerJS ever
+ * noticing: it still reads as open, every dial vanishes into it, and knocking
+ * on it again is the one thing that can never work.
+ */
+const MAX_SILENT_DIALS = 2;
+/**
+ * A data channel that opens is not proof there is anybody behind it. The
+ * joiner abandons a knock after DIAL_TIMEOUT_MS, but the offer it sent may
+ * still be sitting in the broker's queue, so the host can pick up a knock its
+ * owner has already walked away from — and the connection opens on the host's
+ * side alone. So both sides say hello and expect one back; nothing heard by
+ * then and the pairing is a ghost (see `abandonPairing`).
+ */
+const PAIRING_TIMEOUT_MS = 6_000;
+/**
+ * How often the hello is repeated until it is answered. The two ends of a
+ * channel do not come up at the same instant, and a hello that arrives before
+ * the other side has attached its handlers is simply dropped — so the greeting
+ * that decides whether this is a real game must not be a single packet.
+ */
+const HELLO_RETRY_MS = 2_000;
+/** How often a waiting host checks that knocks are actually reaching it. */
+const HOST_CHECK_MS = 5_000;
+/**
+ * Someone has been on the link this long without a single knock arriving: the
+ * broker registration we think we hold is not there. Take the number again.
+ */
+const HOST_STALE_MS = 15_000;
 /**
  * Where a host remembers the number it claimed, so a cold boot (the OS killed
  * the PWA while it was backgrounded) can re-take it and answer the invite that
@@ -168,6 +232,7 @@ export type SessionState =
 /** Everything that travels the wire: game actions plus session control. */
 type WireMessage =
   | { kind: 'action'; seq: number; action: GameAction } // a game action, numbered per sender
+  | { kind: 'hello'; ack?: boolean } // "someone is really here" / "and I heard you"
   | { kind: 'bye' }; // deliberate leave
 
 /** Minimal shape of the Screen Wake Lock API (not in every TS DOM lib). */
@@ -269,6 +334,18 @@ export class SessionService {
   private redialTimer: ReturnType<typeof setTimeout> | null = null;
   /** Knock counter, so a superseded dial's timers cannot end the next one. */
   private dialSeq = 0;
+  /** Consecutive knocks that vanished without any answer from the broker. */
+  private silentDials = 0;
+  /** Armed while a fresh pairing has yet to prove there is anyone behind it. */
+  private pairingTimer: ReturnType<typeof setInterval> | null = null;
+  /** Has the current connection ever carried a message from the other side? */
+  private paired = false;
+  /** Have they told us they heard our hello? Until then, keep repeating it. */
+  private greeted = false;
+  /** Armed while hosting: is anything actually reaching us? */
+  private hostWatchTimer: ReturnType<typeof setInterval> | null = null;
+  /** Since when a joiner has been on the link with no knock getting through. */
+  private joinerSince = 0;
   /** When to stop knocking and call the game gone. */
   private joinDeadline = 0;
   /** Hard end of the knocking, however alive the registry keeps saying it is. */
@@ -572,7 +649,12 @@ export class SessionService {
     // has the app asleep. Knock again rather than declaring the game over.
     const peer = this.createPeer(new Peer(), (err) => {
       if (err.type === 'peer-unavailable' && this.state() === 'joining') {
-        this.dialSeq++; // this dial is answered; its own timers are now stale
+        // The broker answered — our signalling works, the host simply is not
+        // there. Note that this error carries no connection id, so it may well
+        // belong to a knock we have already given up on: it must never be
+        // allowed to invalidate the knock currently in flight, which used to
+        // mean throwing away the very connection that then got through.
+        this.silentDials = 0;
         this.hostNotAnswering();
         return true;
       }
@@ -585,9 +667,19 @@ export class SessionService {
   }
 
   /**
-   * One dial attempt. Superseded attempts are ignored by generation number:
-   * a `peer-unavailable` and the dial's own timeout can both land for the same
-   * knock, and neither may be allowed to tear down the knock after it.
+   * One dial attempt. Generation numbers guard the *failure* paths only: a
+   * `peer-unavailable` and a dial's own timeout can land long after the knock
+   * they belong to, and neither may be allowed to end the knock after it.
+   *
+   * A knock that opens is never refused. It used to be — anything but the
+   * newest generation was closed on the spot — and that is what wedged an
+   * invite for good: the broker's five-second "no such peer" for an earlier
+   * knock would land while a later one was being answered, retire it, and the
+   * joiner would hang up on the host that had just picked up. The host, whose
+   * side had opened, then sat in a game with nobody in it and refused every
+   * further knock, so the friend knocked until the window ran out. Whatever
+   * generation it belongs to, a channel that opens while we are still looking
+   * for a host is exactly what we are looking for.
    */
   private dialHost(peer: Peer, n: number): void {
     if (this.state() !== 'joining') return;
@@ -596,14 +688,19 @@ export class SessionService {
     const conn = peer.connect(PEER_PREFIX + n, { reliable: true });
     const giveUp = setTimeout(() => {
       conn.close(); // superseded or not, this knock is over
-      if (current()) this.hostNotAnswering();
+      if (!current()) return;
+      // Not even a "no such peer" came back: one more sign that it is our own
+      // socket, not the host, that is not there (see `redial`).
+      this.silentDials++;
+      this.hostNotAnswering();
     }, DIAL_TIMEOUT_MS);
     conn.on('open', () => {
       clearTimeout(giveUp);
-      if (!current()) {
-        conn.close(); // a later knock got through first
+      if (this.state() !== 'joining' || this.conn) {
+        conn.close(); // we already have a host
         return;
       }
+      this.silentDials = 0;
       this.attachConnection(conn, 1);
     });
     conn.on('error', () => {
@@ -636,13 +733,27 @@ export class SessionService {
     }, REDIAL_MS);
   }
 
-  /** Knock again — on the same peer if it is still on the broker, else a new one. */
+  /**
+   * Knock again — on the same peer if it is still on the broker, else a new
+   * one. "Still on the broker" is what PeerJS believes, and it can be wrong:
+   * a phone that froze this webview may hand back a socket that is dead
+   * without ever reporting it, and a peer in that state reads as perfectly
+   * open while every knock it makes disappears. Knocks that come back with the
+   * broker's own "no such peer" prove the socket is fine; knocks that come back
+   * with nothing at all are the symptom, so after a couple of those we stop
+   * believing the peer and build a new one.
+   */
   private redial(): void {
     const n = this.gameNumber;
     if (this.state() !== 'joining' || n === null) return;
     const peer = this.peer;
-    if (peer && !peer.destroyed && !peer.disconnected && peer.open) this.dialHost(peer, n);
-    else this.connectToBroker(n);
+    const onBroker = !!peer && !peer.destroyed && !peer.disconnected && peer.open;
+    if (onBroker && this.silentDials < MAX_SILENT_DIALS) {
+      this.dialHost(peer!, n);
+      return;
+    }
+    this.silentDials = 0;
+    this.connectToBroker(n); // replaces the peer, dials again once it is up
   }
 
   /** Forward a local tap on the united board (rule 2.3); applies and mirrors it. */
@@ -769,6 +880,7 @@ export class SessionService {
       // Watch the other seat so we can say "they're here" the moment player 2
       // opens the link — they announce themselves while they knock.
       this.watchOpponent(n, 'host');
+      this.watchForSilentKnocks();
     });
 
     this.wireHostConnections(peer);
@@ -796,6 +908,48 @@ export class SessionService {
     this.wireHostConnections(peer);
   }
 
+  /**
+   * The other half of the dead-socket problem, from the host's chair. A phone
+   * that froze this tab can give back a broker socket that no longer works
+   * without PeerJS noticing: the peer reads as open, the number looks claimed,
+   * and every knock player 2 makes is delivered to a socket nobody is holding.
+   * Both players then sit there — one on "Waiting for opponent", the other on
+   * "Still knocking" — and nothing either of them does will ever help.
+   *
+   * The registry sees what the broker cannot tell us: player 2 heartbeats onto
+   * the link while they knock. So if someone is demonstrably there and not one
+   * knock has arrived, our registration is the thing that is wrong — take the
+   * number again on a fresh peer. Left to the ordinary recovery paths this is
+   * invisible, because nothing ever reports an error.
+   */
+  private watchForSilentKnocks(): void {
+    if (this.hostWatchTimer) return;
+    this.hostWatchTimer = setInterval(() => {
+      const peer = this.peer;
+      const idle =
+        this.mode !== 'p2p' ||
+        this.state() !== 'hosting' ||
+        this.opponentPresent() !== true ||
+        !peer ||
+        peer.destroyed ||
+        peer.disconnected ||
+        !peer.open; // not on the broker: the retry loops already own this
+      if (idle) {
+        this.joinerSince = 0;
+        return;
+      }
+      if (this.peerRetryTimer || this.reregisterTimer) return; // already on its way
+      const now = Date.now();
+      if (!this.joinerSince) {
+        this.joinerSince = now;
+        return;
+      }
+      if (now - this.joinerSince < HOST_STALE_MS) return;
+      this.joinerSince = 0;
+      if (this.gameNumber !== null) this.hostWithId(this.gameNumber);
+    }, HOST_CHECK_MS);
+  }
+
   /** The host's `connection` handler — accepts player 2, refuses the rest. */
   private wireHostConnections(peer: Peer): void {
     // Registered once, outside 'open' — broker reconnects re-emit 'open' and
@@ -817,32 +971,157 @@ export class SessionService {
     old?.close();
     this.myPlayer.set(me);
     this.stopJoinWatch();
+    this.stopPairingWatch();
     this.waitingForHost.set(false);
-    // The link has paired: from here the game lives in these two browsers and
-    // cannot be resumed, so there is nothing left for a relaunch to re-take.
-    this.forgetHostedLink();
+    this.paired = false;
+    this.greeted = false;
     this.sentSeq = 0;
     this.appliedSeq = 0;
     this.game.resetScores(); // fresh session — score starts 0–0 (rule 8)
     this.game.reset();
     this.state.set('playing');
 
-    // Rule 9: hold our presence on the link, and (host side) mark it occupied
-    // now that player 2 has arrived.
+    // Rule 9: hold our presence on the link. Marking it *occupied* waits for
+    // proof that someone is really on the other end — see `confirmPairing`.
     if (this.mode === 'p2p' && this.gameNumber !== null) {
       const role: SessionRole = me === 0 ? 'host' : 'joiner';
       this.registry.startPresence(this.gameNumber, role);
-      if (me === 0) void this.registry.markJoined(this.gameNumber);
       this.watchOpponent(this.gameNumber, role);
     }
 
     conn.on('data', (data) => this.onMessage(data as WireMessage));
     conn.on('close', () => this.onLost(conn));
     conn.on('error', () => this.onLost(conn));
+
+    // Say hello, and wait to hear one back: an open channel is not proof that
+    // anyone is behind it.
+    this.startPairingWatch(conn);
+  }
+
+  /**
+   * Greet the other side until they say they heard us, and give up on the
+   * pairing if nothing ever comes back. Repeated rather than sent once, and
+   * acknowledged rather than assumed: the two ends of a channel do not open at
+   * the same instant, so a hello can land before the other side has attached
+   * its handlers and simply be dropped. Hearing *their* hello is no proof that
+   * they heard ours — whoever is greeted first would fall quiet, and the other
+   * would sit out the window and throw away a perfectly good game.
+   *
+   * (A peer running a build older than this one never says hello, so its
+   * pairing reads as a ghost. That build is the one this fixes, and it wedges
+   * such an invite on its own account anyway.)
+   */
+  private startPairingWatch(conn: DataConnection): void {
+    this.stopPairingWatch();
+    this.greeted = false;
+    this.sayHello(conn, false);
+    let waited = 0;
+    this.pairingTimer = setInterval(() => {
+      if (conn !== this.conn || this.greeted) {
+        this.stopPairingWatch(); // they have us; nothing left to prove
+        return;
+      }
+      waited += HELLO_RETRY_MS;
+      if (waited >= PAIRING_TIMEOUT_MS) {
+        this.stopPairingWatch();
+        if (!this.paired) this.abandonPairing(conn);
+        return;
+      }
+      this.sayHello(conn, false);
+    }, HELLO_RETRY_MS);
+  }
+
+  private sayHello(conn: DataConnection, ack: boolean): void {
+    try {
+      conn.send({ kind: 'hello', ack } satisfies WireMessage);
+    } catch {
+      // channel already gone — the watch above ends the pairing
+    }
+  }
+
+  /**
+   * The other side has spoken, so this is a real game and not a knock that
+   * opened on one side only. Everything that must not happen on a ghost — the
+   * link going "occupied" in the registry, and this device forgetting the link
+   * it hosts — waits until now.
+   */
+  private confirmPairing(): void {
+    if (this.paired) return;
+    this.paired = true;
+    // Note this does *not* stop the greeting: hearing them says nothing about
+    // whether they have heard us. Only their acknowledgement does.
+    // The link has paired: from here the game lives in these two browsers and
+    // cannot be resumed, so there is nothing left for a relaunch to re-take.
+    this.forgetHostedLink();
+    if (this.mode === 'p2p' && this.myPlayer() === 0 && this.gameNumber !== null) {
+      void this.registry.markJoined(this.gameNumber);
+    }
+  }
+
+  /**
+   * Nobody ever answered on this channel. That is the invite-link ghost: the
+   * joiner gave up on a knock, the broker delivered it to the host anyway, and
+   * the connection opened on the host's side alone. Left alone the host sits in
+   * a game with no opponent and turns away every real knock that follows, which
+   * is precisely how a friend ends up knocking until the window runs out. So
+   * drop it and go back to what we were doing — the host to waiting for player
+   * 2, the joiner to knocking.
+   */
+  private abandonPairing(conn: DataConnection): void {
+    if (conn !== this.conn || this.paired || this.state() !== 'playing') return;
+    this.conn = null;
+    conn.close();
+    if (this.myPlayer() === 0) this.backToHosting();
+    else this.resumeKnocking();
+  }
+
+  /**
+   * Player 1 after a pairing that came to nothing: still hosting the same
+   * number, still watching for the friend who is knocking on it.
+   */
+  private backToHosting(): void {
+    this.state.set('hosting');
+    if (this.mode === 'p2p' && this.gameNumber !== null) {
+      this.registry.startPresence(this.gameNumber, 'host');
+      this.watchOpponent(this.gameNumber, 'host');
+      this.watchForSilentKnocks();
+    }
+  }
+
+  /**
+   * Player 2 after a pairing that came to nothing: keep looking for the host
+   * rather than reporting a game that never started as one that ended.
+   */
+  private resumeKnocking(): void {
+    const n = this.gameNumber;
+    if (this.mode !== 'p2p' || n === null || Date.now() >= this.joinLimit) {
+      this.fail(GAME_OVER_MSG);
+      return;
+    }
+    this.state.set('joining');
+    this.waitingForHost.set(true);
+    this.joinDeadline = Math.max(
+      this.joinDeadline,
+      Math.min(Date.now() + JOIN_WINDOW_MS, this.joinLimit),
+    );
+    this.watchHostLink(n);
+    this.redial();
+  }
+
+  private stopPairingWatch(): void {
+    if (this.pairingTimer) clearInterval(this.pairingTimer);
+    this.pairingTimer = null;
   }
 
   private onMessage(msg: WireMessage): void {
+    this.confirmPairing(); // anything at all proves someone is there
     switch (msg.kind) {
+      case 'hello':
+        // Answer a greeting so the other side can stop repeating it; an
+        // answer needs no answer of its own.
+        if (msg.ack) this.greeted = true;
+        else if (this.conn) this.sayHello(this.conn, true);
+        break;
       case 'bye':
         this.finalizeDisconnect();
         break;
@@ -1007,6 +1286,10 @@ export class SessionService {
       // count towards giving up on them.
       this.peerRebuilds = 0;
       this.reregisterTries = 0;
+      // Timers were frozen with the tab, so the silent-knock watch has not been
+      // counting: give the socket that has just thawed its full grace period
+      // rather than condemning it the instant we are back.
+      this.joinerSince = 0;
       const peer = this.peer;
       if (!peer || peer.destroyed) {
         this.rebuildPeer();
@@ -1051,22 +1334,20 @@ export class SessionService {
     wl?.release().catch(() => {});
   }
 
-  /** The data channel died while playing — start the resume window. */
   /** The data channel died — the game is over (no resume; see the file header). */
   private onLost(conn: DataConnection): void {
     if (conn !== this.conn) return; // an old connection we already replaced
     if (this.state() !== 'playing') return;
     this.conn = null;
+    this.stopPairingWatch();
 
-    // If not a single game action ever crossed this connection, it never really
-    // carried a game. That is the invite-link ghost: the joiner's first dial
-    // times out while the host tab is backgrounded and is abandoned, but the
-    // broker can still hand that stale offer to the host, opening a one-sided
-    // connection the joiner has already moved on from. Ending the session on it
-    // would refuse the joiner's real retry as a full game, so the host simply
-    // goes back to waiting for player 2 — nothing was played, nothing is lost.
-    if (this.myPlayer() === 0 && this.sentSeq === 0 && this.appliedSeq === 0) {
-      this.state.set('hosting');
+    // If we never heard a word over this connection, it never really carried a
+    // game — it is the invite-link ghost of `abandonPairing`, dying a little
+    // sooner. Nothing was played and nothing is lost, so go back to what we
+    // were doing rather than reporting an opponent who was never there.
+    if (!this.paired) {
+      if (this.myPlayer() === 0) this.backToHosting();
+      else this.resumeKnocking();
       return;
     }
 
@@ -1075,6 +1356,7 @@ export class SessionService {
 
   /** The opponent left or the connection died — the session is over. */
   private finalizeDisconnect(): void {
+    this.stopPairingWatch();
     this.registry.stopPresence(); // we are no longer on the link
     this.stopWatchingOpponent();
     this.conn = null;
@@ -1088,6 +1370,10 @@ export class SessionService {
     this.peerRetryTimer = null;
     if (this.redialTimer) clearTimeout(this.redialTimer);
     this.redialTimer = null;
+    if (this.hostWatchTimer) clearInterval(this.hostWatchTimer);
+    this.hostWatchTimer = null;
+    this.joinerSince = 0;
+    this.stopPairingWatch();
     this.stopJoinWatch();
   }
 
@@ -1105,6 +1391,9 @@ export class SessionService {
     this.peerRebuilds = 0;
     this.reregisterTries = 0;
     this.dialSeq++; // orphan any dial still in flight from a previous attempt
+    this.silentDials = 0;
+    this.paired = false;
+    this.greeted = false;
     this.joinDeadline = 0;
     this.joinLimit = 0;
     this.waitingForHost.set(false);
