@@ -1,7 +1,13 @@
 import { Injectable, computed, signal } from '@angular/core';
 
 export const BOARD_W = 4;
-export const BOARD_H = 4;
+/**
+ * Taller than it is wide: 4 across, 5 down (20 squares). Everything here is
+ * written against these two constants, but the board's *shape* also reaches
+ * the CSS — `.board` spells out its row count, and `fitBoards()` sizes a
+ * board of this ratio — so both have to move together.
+ */
+export const BOARD_H = 5;
 
 export type PlayerId = 0 | 1;
 export type Phase = 'placement' | 'fire' | 'move' | 'gameover';

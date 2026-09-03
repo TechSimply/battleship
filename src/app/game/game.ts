@@ -403,8 +403,8 @@ export class Game {
    * Everything is measured fractionally and re-measured after being applied.
    * `offsetWidth`/`offsetHeight` round to whole pixels, and a panel that
    * rounds down leaves the pair a hair too tall for the row; the board's own
-   * height is likewise not exactly `--board-size`, since its four
-   * `aspect-ratio: 1` rows each snap to the device pixel grid. Either way the
+   * height is likewise not exactly the height it was sized for, since its
+   * rows each snap to the device pixel grid. Either way the
    * excess is invisible in the numbers but not on screen: `.boards` centres
    * its content and hides the overflow, so a fit that misses by a couple of
    * pixels quietly shaves the top board's header and the bottom board's last
@@ -432,13 +432,20 @@ export class Game {
       const wrapBox = wrap.getBoundingClientRect();
       const boardBox = board.getBoundingClientRect();
       // What one panel costs around its board — its header, padding and border.
-      // Measured against the board's own box, which is `--board-size` square by
-      // construction (border-box, definite width *and* height), so this is
-      // purely the chrome and nothing about the board leaks into it.
+      // Measured against the board's own box, which is definite by
+      // construction (border-box, `--board-size` wide and `--board-h` tall), so
+      // this is purely the chrome and nothing about the board leaks into it.
       const panelX = wrapBox.width - boardBox.width;
       const panelY = wrapBox.height - boardBox.height;
 
-      const room = Math.min(free.width - panelX, (free.height - gaps) / rows - panelY, MAX_BOARD);
+      // The board is 4 across and 5 down, so height is the binding constraint
+      // on a phone: convert the height a panel may have into the width that
+      // fits it (`--board-size` is the width; the CSS derives the height).
+      const room = Math.min(
+        free.width - panelX,
+        (((free.height - gaps) / rows - panelY) * BOARD_W) / BOARD_H,
+        MAX_BOARD,
+      );
       const size = Math.max(Math.floor(room - FIT_SLACK), MIN_BOARD);
       if (size === applied) break; // settled — the panels measure the same as they render
       applied = size;
@@ -459,7 +466,10 @@ export class Game {
       const used = panels.reduce((h, p) => h + p.getBoundingClientRect().height, 0) + gaps;
       const over = used - free;
       if (over <= 0) break;
-      applied = Math.max(applied - Math.ceil(over / rows), MIN_BOARD);
+      // Overflow is vertical, `applied` is a width: a pixel off the width
+      // takes BOARD_H / BOARD_W pixels off the height.
+      const shrink = Math.ceil(((over / rows) * BOARD_W) / BOARD_H);
+      applied = Math.max(applied - Math.max(shrink, 1), MIN_BOARD);
       set(applied);
     }
   }

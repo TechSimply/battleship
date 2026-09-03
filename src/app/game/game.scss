@@ -1,6 +1,6 @@
 // Dark ocean / sonar theme.
 // Boards render as one continuous water surface — layered blue gradients with
-// drifting caustic light and a passing sheen — with the 4×4 grid showing only
+// drifting caustic light and a passing sheen — with the 4×5 grid showing only
 // as faintly visible segment lines, like charted sectors of the sea.
 // Palette: deep navy panels, cyan sonar accents, amber for exposure,
 // green for the fleet, ember red for hits.
@@ -217,7 +217,11 @@ $expose-amber: #ffc457;
   gap: 0.5em;
   overflow: hidden;
 
-  --board-size: clamp(56px, min(76vw, 300px, calc((100dvh - 260px) / 2)), 300px);
+  // `--board-size` is the board's *width*; the board is 4 wide by 5 down, so
+  // its height is a quarter as much again. game.ts only ever writes the width,
+  // and the height follows it — nothing can set the two out of step.
+  --board-size: clamp(56px, min(76vw, 300px, calc((100dvh - 260px) * 4 / 5)), 300px);
+  --board-h: calc(var(--board-size) * 5 / 4);
 }
 
 // Overlay spanning both boards, so a shot can fly from one to the other.
@@ -540,18 +544,18 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   // Explicit rows, and a height as definite as the width. The obvious spelling
-  // — four `aspect-ratio: 1` cells and let the board take the height that
-  // falls out — makes the board's height a *sum of four rounded row heights*,
-  // so it can land a pixel or two over `--board-size` on any given device.
-  // `.boards` clips rather than scrolls, so those stray pixels came off the
-  // bottom row as a visible shave. Four equal rows of a definite height cannot
-  // add up to anything but that height.
-  grid-template-rows: repeat(4, 1fr);
-  // Border-box keeps the rendered board exactly `--board-size` tall and wide,
-  // which is what game.ts's fit measurement assumes.
+  // — cells with `aspect-ratio: 1` and let the board take the height that
+  // falls out — makes the board's height a *sum of five rounded row heights*,
+  // so it can land a pixel or two over the height it was measured for on any
+  // given device. `.boards` clips rather than scrolls, so those stray pixels
+  // came off the bottom row as a visible shave. Five equal rows of a definite
+  // height cannot add up to anything but that height.
+  grid-template-rows: repeat(5, 1fr);
+  // Border-box keeps the rendered board exactly `--board-size` wide and
+  // `--board-h` tall, which is what game.ts's fit measurement assumes.
   box-sizing: border-box;
   width: var(--board-size);
-  height: var(--board-size);
+  height: var(--board-h);
   margin: 0 auto;
   border-radius: 0.7em;
   overflow: hidden;
@@ -611,7 +615,7 @@ $flight-ease: cubic-bezier(0.5, 0, 0.9, 0.6);
 
 .cell {
   position: relative; // keeps cells above the board's ::before caustics layer
-  // No aspect-ratio: the grid's four equal rows already make each cell square,
+  // No aspect-ratio: the grid's five equal rows already make each cell square,
   // and a self-sizing cell is exactly what used to push the board past the
   // height it was measured for.
   min-width: 0;

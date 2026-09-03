@@ -24,7 +24,7 @@ export class App {
   private readonly ads = inject(GdAdsService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.46';
+  protected readonly version = 'v0.47';
 
   constructor() {
     // No-op unless we are inside GameDistribution's iframe.

@@ -7,11 +7,11 @@ game logic:
 its a battle shipt game p2p
 
 1. We have only two oposing ships
-2.1. The game board consists of 16 squars 4x4
+2.1. The game board consists of 20 squars 4x5 (4 wide, 5 high)
 2.2. There are two boards only for the placement (rule 4): each player picks the starting
 square of their ship on their own board, hidden from the other player.
 2.3. After both ships are placed the two boards become one: from then on there is a single
-united 4x4 board that both ships sail on, fire at and bomb. Same 16 squares for both.
+united 4x5 board that both ships sail on, fire at and bomb. Same 20 squares for both.
 3. Ship occupies one square and can move to is bordering all 8 squars.
 4. In the begining of the game plaers choose where to position the ship (see 2. 3.), 
 the ships hould not be visible to the oposing player.

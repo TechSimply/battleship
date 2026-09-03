@@ -8,9 +8,9 @@ Deployed to GitHub Pages: https://techsimply.github.io/battleship/
 The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-logic.txt)
 (the owner edits it directly — always re-read it before changing game logic). In short:
 
-- **One united 4×4 board** (rule 2.3). The two boards survive only as the private placement
+- **One united 4×5 board (4 wide, 5 high)** (rule 2.3). The two boards survive only as the private placement
   step: each player picks their starting square hidden from the other, and from the first shot
-  on both ships sail, fire at and bomb the same 16 squares — a crater is dead for both.
+  on both ships sail, fire at and bomb the same 20 squares — a crater is dead for both.
 - **One ship per player**, occupying one square; it can move to any of its 8 bordering squares.
 - Then alternating fire: firing **exposes** the square you fired from (rule 5.2), the bombed
   square becomes **permanently unusable** (rule 5.3), and after firing you **must move** one

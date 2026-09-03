@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { BOARD_W, Coord, GameService, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, Coord, GameService, PlayerId } from './game.service';
 
 describe('GameService', () => {
   let game: GameService;
@@ -28,7 +28,7 @@ describe('GameService', () => {
 
   function allSquares(): Coord[] {
     const all: Coord[] = [];
-    for (let y = 0; y < BOARD_W; y++) for (let x = 0; x < BOARD_W; x++) all.push({ x, y });
+    for (let y = 0; y < BOARD_H; y++) for (let x = 0; x < BOARD_W; x++) all.push({ x, y });
     return all;
   }
 
@@ -301,7 +301,7 @@ describe('GameService', () => {
 
   it('has no exposed square yet, so every square but the hunter\'s own is possible', () => {
     placeBothShips();
-    expect(game.possibleShipSquares(1)).toHaveLength(15);
+    expect(game.possibleShipSquares(1)).toHaveLength(BOARD_W * BOARD_H - 1);
   });
 
   it('narrows possible ship squares to the bordering squares after a forced move, excluding bombed ones', () => {
