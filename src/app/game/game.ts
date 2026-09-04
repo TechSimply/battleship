@@ -47,6 +47,8 @@ interface CellVM {
   impact: boolean;
   /** Draw the struck hull in the flash — only where no ship is drawn already. */
   impactGhost: boolean;
+  /** Rule 5.2: the enemy fired from here a moment ago — light their hull up. */
+  fireGhost: boolean;
 }
 
 /** One player's health readout: the gauges above the board (rule 10). */
@@ -139,6 +141,15 @@ const FIT_PASSES = 3;
 /** How long the hit flash stays on the square, in ms (the shell lands at ~300). */
 const IMPACT_MS = 1400;
 /**
+ * Rule 5.2, made visible: how long the enemy's hull stays lit by its own muzzle
+ * flash, in ms, measured from the launch. Firing already gives their square
+ * away, so seeing the ship standing on it for a moment tells you nothing the
+ * exposure marker doesn't — and it is off the board again long before they
+ * sail, which is the part that must stay hidden. Cut short anyway the moment
+ * they move; keep in step with the `fire-reveal` animation in game.scss.
+ */
+const FIRE_REVEAL_MS = 1100;
+/**
  * Rule 5.5: how long your own flame lives, in ms, measured from the launch.
  * It tells you nothing you don't already know — you fired it — so it fades out
  * and leaves the board carrying exactly one standing flame: the enemy's.
@@ -177,6 +188,14 @@ export class Game {
   protected readonly impact = signal<{ c: Coord; victim: PlayerId } | null>(null);
   private impactTimer?: ReturnType<typeof setTimeout>;
 
+  /**
+   * Rule 5.2's moment, from the other side: the square the enemy just fired
+   * from, with their hull lit up on it. Only ever set for the *enemy's* shot —
+   * your own ship is drawn all game anyway — and only until they sail on.
+   */
+  protected readonly muzzle = signal<{ c: Coord; shooter: PlayerId } | null>(null);
+  private muzzleTimer?: ReturnType<typeof setTimeout>;
+
   constructor() {
     // Tracer: fly a rocket from the shooter's (exposed) square to the bombed
     // square, so the exposure visibly originates from the shot.
@@ -196,6 +215,31 @@ export class Game {
         this.impact.set({ c: shot.to, victim: shot.shooter === 0 ? 1 : 0 });
         this.impactTimer = setTimeout(() => this.impact.set(null), IMPACT_MS);
       });
+    });
+
+    // The muzzle flash gives the enemy away for a second: the rocket leaves
+    // their square (rule 5.2), so their hull is lit up on it as it goes. Where
+    // they sail afterwards (rule 5.4) is still theirs to keep — the reveal is
+    // over long before, and is torn down early below if they are quick.
+    effect(() => {
+      const shot = this.game.lastShot();
+      if (!shot?.from || shot.shooter === this.session.myPlayer()) return;
+      untracked(() => {
+        clearTimeout(this.muzzleTimer);
+        this.muzzle.set({ c: shot.from!, shooter: shot.shooter });
+        this.muzzleTimer = setTimeout(() => this.muzzle.set(null), FIRE_REVEAL_MS);
+      });
+    });
+
+    // …and the sea takes them back the instant they move, so the hull is never
+    // drawn on a square they have already left — or, worse, one they moved to.
+    effect(() => {
+      const flash = this.muzzle();
+      if (!flash) return;
+      const ship = this.game.players()[flash.shooter].ship;
+      if (!ship || ship.x !== flash.c.x || ship.y !== flash.c.y) {
+        untracked(() => this.clearMuzzle());
+      }
     });
 
     // A new round starts from clean water: no rockets have been fired yet.
@@ -223,6 +267,7 @@ export class Game {
       clearTimeout(this.rocketTimer);
       clearTimeout(this.ownTrailTimer);
       clearTimeout(this.impactTimer);
+      clearTimeout(this.muzzleTimer);
     });
   }
 
@@ -354,6 +399,7 @@ export class Game {
     // course. A ram at placement has no approach, so it plays straight across.
     const hitSquares = this.game.hitSquares();
     const impact = this.impact();
+    const muzzle = this.muzzle();
     const lastRam = this.game.lastRam();
     const ramAngle =
       lastRam && lastRam.from
@@ -366,6 +412,10 @@ export class Game {
       for (let x = 0; x < BOARD_W; x++) {
         const mine = at(mineState.ship, x, y);
         const enemy = at(foeState.ship, x, y) && showFoe;
+        // Rule 5.2: the enemy's own gun flash shows them up for a second. Only
+        // where the sea is otherwise empty — with a ship already drawn there
+        // (the round is over, or they wrecked) there is nothing to reveal.
+        const fireGhost = !!muzzle && at(muzzle.c, x, y) && !mine && !enemy;
         cells.push({
           x,
           y,
@@ -386,9 +436,12 @@ export class Game {
           moveDir: mineState.ship
             ? (Math.atan2(y - mineState.ship.y, x - mineState.ship.x) * 180) / Math.PI
             : 0,
+          // Rule 6.4: whatever hull is drawn here wears its own health. The
+          // muzzle flash included — the gauge has been saying that colour all
+          // along, so it gives nothing away.
           color: mine
             ? healthColor(mineState.health)
-            : enemy
+            : enemy || fireGhost
               ? healthColor(foeState.health)
               : '',
           ram:
@@ -398,6 +451,7 @@ export class Game {
           hitCrater: hitSquares[y * BOARD_W + x],
           impact: !!impact && at(impact.c, x, y),
           impactGhost: !!impact && at(impact.c, x, y) && !mine && !enemy,
+          fireGhost,
         });
       }
     }
@@ -614,6 +668,12 @@ export class Game {
     clearTimeout(this.ownTrailTimer);
     this.trails.set([]);
     this.rocket.set(null);
+    this.clearMuzzle();
+  }
+
+  private clearMuzzle(): void {
+    clearTimeout(this.muzzleTimer);
+    this.muzzle.set(null);
   }
 
   private shotLayer(): HTMLElement | null {

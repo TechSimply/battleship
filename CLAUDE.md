@@ -167,7 +167,13 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/game/` — per-player game view of the one united board: your ship is drawn, the
   enemy's is hidden until it is wrecked or the game ends — a *burning* enemy is never drawn,
   since revealing its square each turn would make finishing it trivial; its damage shows only
-  in the health gauge. The two gauges sit inside the board panel, above the board, so
+  in the health gauge. The one glimpse you get of it is its **muzzle flash**: firing already
+  gives the square away (rule 5.2), so when the enemy shoots, their hull lights up on the
+  square the rocket leaves (`muzzle` in game.ts, `.fire-ghost` / `fire-reveal` in game.scss)
+  and the sea takes it back after `FIRE_REVEAL_MS` — or sooner, since a second effect drops
+  the reveal the moment their ship actually moves. Where they sail afterwards (rule 5.4) is
+  never drawn; only the exposure reticle stays behind. It is the same one hull element as the
+  hit reveal (rule 6.2.1) — a shot's launch square and its target square are never the same. The two gauges sit inside the board panel, above the board, so
   `fitBoards()` counts them as panel chrome and the board still fits exactly. Health colours live in `healthColor()` (game.ts) and reach
   the CSS as `--ship-color` on the board panel, so gauge, ship icon, counter and the flame on
   the deck are always the same colour. It is a fixed, viewport-sized column
