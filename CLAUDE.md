@@ -125,7 +125,14 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   and the sea takes it back after `FIRE_REVEAL_MS` — or sooner, since a second effect drops
   the reveal the moment their ship actually moves. Where they sail afterwards (rule 5.4) is
   never drawn; only the exposure reticle stays behind. It is the same one hull element as the
-  hit reveal (rule 6.2.1) — a shot's launch square and its target square are never the same. The two gauges sit inside the board panel, above the board, so
+  hit reveal (rule 6.2.1) — a shot's launch square and its target square are never the same.
+  **Both reveals are transient, so a new board has to start with them cleared.** The muzzle
+  flash and the tracer are driven by `lastShot`, which `reset()` clears along with `lastRam`;
+  the hit flash is the component's own `impact`, which `clearShotFx()` drops when the phase
+  goes back to `placement`. Miss either and the next board opens with a hull flashing on a
+  square nobody is on: a freshly built view runs its animation effects once against whatever
+  shot the service is still holding, so a leftover one is faithfully replayed onto empty water.
+  The two gauges sit inside the board panel, above the board, so
   `fitBoards()` counts them as panel chrome and the board still fits exactly. Health colours live in `healthColor()` (game.ts) and reach
   the CSS as `--ship-color` on the board panel, so gauge, ship icon, counter and the flame on
   the deck are always the same colour. It is a fixed, viewport-sized column

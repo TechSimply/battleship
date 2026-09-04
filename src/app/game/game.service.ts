@@ -217,6 +217,11 @@ export class GameService {
     this.destroyed.set(Array(BOARD_W * BOARD_H).fill(false));
     this.hitSquares.set(Array(BOARD_W * BOARD_H).fill(false));
     this.lastRam.set(null);
+    // Transient, exactly like `lastRam`: it describes a shot in the round that
+    // just ended. Leaving it behind hands the next board's freshly-built view
+    // a shot to animate — its effects run once on creation — and the hull
+    // ghost of a hit lands on a square nobody is standing on.
+    this.lastShot.set(null);
   }
 
   /** Clear the score — a fresh session (rule 8 scope is one game id). */

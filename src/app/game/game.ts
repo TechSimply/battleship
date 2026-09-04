@@ -242,9 +242,10 @@ export class Game {
       }
     });
 
-    // A new round starts from clean water: no rockets have been fired yet.
+    // A new round starts from clean water: no rockets have been fired yet, and
+    // nothing is still burning or flashing from the round before it.
     effect(() => {
-      if (this.game.phase() === 'placement') untracked(() => this.clearTrails());
+      if (this.game.phase() === 'placement') untracked(() => this.clearShotFx());
     });
 
     // Keep the boards fitted to the leftover space after every render — the
@@ -664,10 +665,18 @@ export class Game {
     if (moved) this.trails.set(next);
   }
 
-  private clearTrails(): void {
+  /**
+   * Wipe everything the last round's shots left on the water: flames, the
+   * rocket in flight, and both of the transient hull reveals. All of it belongs
+   * to a board that no longer exists, and the two ghosts in particular would
+   * otherwise keep drawing a hull on an empty square of the new one.
+   */
+  private clearShotFx(): void {
     clearTimeout(this.ownTrailTimer);
     this.trails.set([]);
     this.rocket.set(null);
+    clearTimeout(this.impactTimer);
+    this.impact.set(null);
     this.clearMuzzle();
   }
 

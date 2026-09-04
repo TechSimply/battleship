@@ -356,4 +356,19 @@ describe('GameService', () => {
     expect(game.players().map((p) => p.health)).toEqual([100, 100]);
     expect(game.destroyed().every((d) => !d)).toBe(true);
   });
+
+  /**
+   * The shot that ended the round belongs to the round. A view built for the
+   * next board runs its animation effects once on creation, so a shot left
+   * lying here is one it will faithfully replay — the killing blow's hull ghost
+   * flashing on a square of a board where nobody has even placed a ship.
+   */
+  it('forgets the last shot on reset, like the last ram', () => {
+    placeBothShips();
+    sink(0);
+    expect(game.lastShot()?.hit).toBe(true);
+    game.apply({ kind: 'reset' });
+    expect(game.lastShot()).toBeNull();
+    expect(game.lastRam()).toBeNull();
+  });
 });
