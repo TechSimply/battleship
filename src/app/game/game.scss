@@ -490,7 +490,7 @@ $own-trail-life: 1s;
     }
   }
 
-  // Rule 12.3: this gun's odds, under the health of the ship that fires it.
+  // Rule 12.7: this gun's odds, under the health of the ship that fires it.
   // Steel-blue and quiet while it is the other side's turn; it takes the ship's
   // own colour and lights up while this is the gun taking aim, so the two bars
   // between them say who is shooting and how well they can see.
@@ -544,7 +544,7 @@ $own-trail-life: 1s;
   }
 }
 
-// The reticle breathes while its owner is choosing a square (rule 12.2).
+// The reticle breathes while its owner is choosing a square (rule 12.6).
 @keyframes aim-pulse {
   50% {
     transform: scale(1.18);
