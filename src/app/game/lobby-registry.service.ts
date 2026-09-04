@@ -5,33 +5,95 @@ import {
   get,
   getDatabase,
   increment,
+  onChildAdded,
   onValue,
+  push,
   ref,
   remove,
   runTransaction,
   serverTimestamp,
+  set,
   update,
 } from 'firebase/database';
 import { firebaseConfig } from '../../environments/environment';
+import { BOARD_H, BOARD_W, GameAction, PlayerId } from './game.service';
 
 /**
- * Rule 9 (durable invite links). PeerJS only knows a Battle{n} id is claimed
- * while the host's tab is open — close the tab and the id silently frees, the
- * link dies, and a returning host comes back as a different random number. That
- * makes links too flaky to publish.
+ * Rule 9 (durable invite links) — and, since the game moved off WebRTC, the
+ * whole of the multiplayer transport.
  *
- * This service is the session bookkeeping layer that outlives the browsers: a
- * Firebase Realtime Database record per Battle{n} that tracks who is present
- * (heartbeat timestamps, cleared server-side on disconnect) so the link stays
- * claimable for a grace window (rule 9.2) even while nobody is connected, and
- * the same number can be reclaimed as the same player on return. Gameplay never
- * touches this — it stays peer-to-peer over PeerJS.
+ * A Firebase Realtime Database record per Battle{n} holds who is present
+ * (heartbeat timestamps) and, under `moves`, an append-only log of every action
+ * played. Both devices replay that log into the same deterministic rules engine
+ * (`GameService`), so the database orders the moves and the two boards cannot
+ * drift: there is nothing for them to disagree about.
+ *
+ * That is a deliberate step back from peer-to-peer. Gameplay used to run over a
+ * WebRTC data channel brokered by the free PeerJS cloud, which has three
+ * separate ways to fail on a phone — the broker forgets a backgrounded host's
+ * id, its offer queue answers late enough to race the joiner's own retries, and
+ * ICE simply cannot always cross a carrier NAT, where the fallback is a free
+ * shared TURN relay on a single UDP port. Every one of those shows up as two
+ * players staring at screens that never change. This is one WebSocket to
+ * Google on 443, which is the same connection that was already claiming the
+ * game number successfully on those very phones.
+ *
+ * What it buys beyond reliability: the board outlives both browsers, so a
+ * player who closes the app, runs out of battery or walks into a tunnel comes
+ * back to the game exactly as they left it (`reclaimSeat` + a log replay), and
+ * the link is as durable as rule 9.2's window.
  *
  * Firebase is initialised lazily (first real use) so merely constructing the
  * app — e.g. in unit tests — never opens a socket.
  */
 
 export type SessionRole = 'host' | 'joiner';
+
+/**
+ * A seat taken back on a link, and whether the game behind it has actually
+ * started — a host returning to a game in progress goes straight to the board,
+ * one whose link nobody has opened yet goes back to waiting for player 2.
+ */
+export interface Seat {
+  role: SessionRole;
+  joined: boolean;
+}
+
+/**
+ * One move on the wire. Short keys because every move is a separate record:
+ * `p` player, `k` kind, `x`/`y` the square (absent on a round reset).
+ */
+export interface WireMove {
+  p: number;
+  k: string;
+  x?: number;
+  y?: number;
+}
+
+/**
+ * Rebuild an action from a stored move, or null if it is not one. Anything can
+ * write to a session (the database has no accounts — the game number is the
+ * only secret), so the log is parsed defensively rather than trusted: a
+ * malformed record is skipped, not applied.
+ */
+export function toAction(raw: unknown): GameAction | null {
+  const m = raw as WireMove | null;
+  if (!m || typeof m.k !== 'string') return null;
+  if (m.k === 'reset') return { kind: 'reset' };
+  if (m.k !== 'place' && m.k !== 'fire' && m.k !== 'move') return null;
+  if (m.p !== 0 && m.p !== 1) return null;
+  const { x, y } = m;
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+  if (x! < 0 || x! >= BOARD_W || y! < 0 || y! >= BOARD_H) return null;
+  return { kind: m.k, player: m.p as PlayerId, c: { x: x!, y: y! } };
+}
+
+/** The same action on its way out. */
+export function toWire(action: GameAction): WireMove {
+  return action.kind === 'reset'
+    ? { p: 0, k: 'reset' }
+    : { p: action.player, k: action.kind, x: action.c.x, y: action.c.y };
+}
 
 /**
  * One `/sessions/{n}` record. `*At` are server-ms of each party's last
@@ -48,11 +110,26 @@ export interface SessionRecord {
   joined: boolean;
   /** A deliberate Leave killed the link permanently (rule 9, leave-btn). */
   terminated: boolean;
+  /**
+   * Which device holds each seat. Rule 9 says a returning player is still the
+   * player number they were, and this is what settles it: the *record* decides
+   * the seat, so a reopened app takes back the one it had rather than trusting
+   * its own memory — and a stranger who guesses the number cannot walk into a
+   * seat that is already someone's.
+   */
+  hostId?: string;
+  joinerId?: string;
 }
 
-/** Rule 9.2 link lifetimes once nobody is present. */
-const STALE_UNOCCUPIED_MS = 2 * 60_000; // never paired: 2 minutes
-const STALE_OCCUPIED_MS = 5 * 60_000; // paired at least once: 5 minutes
+/**
+ * Rule 9.2 link lifetimes once nobody is present. A link that never found a
+ * second player is a share that went nowhere, and its number is worth
+ * recycling; a game that has two players in it is worth keeping through a
+ * phone call, a commute or a night's sleep, because the board now lives here
+ * and both of them can come back to it exactly as they left it.
+ */
+const STALE_UNOCCUPIED_MS = 10 * 60_000; // never paired: 10 minutes
+const STALE_OCCUPIED_MS = 24 * 60 * 60_000; // paired at least once: a day
 /** A presence heartbeat lands this often… */
 const HEARTBEAT_MS = 20_000;
 /** …and a party counts as "present" until this long after its last beat. */
@@ -97,28 +174,6 @@ export function isPartyPresent(
   if (!rec || rec.terminated) return false;
   const ts = role === 'host' ? rec.hostAt : rec.joinerAt;
   return !!ts && now - ts < PRESENCE_TTL_MS;
-}
-
-/**
- * Is the host still within reach — i.e. is knocking on this number worth it?
- *
- * Deliberately *not* `isSessionAlive`: a knocking player 2 heartbeats its own
- * presence into the record (so the link stays reclaimable for the host while
- * someone is actually waiting on it), and a joiner that counted its own
- * heartbeat as proof of life would knock on an abandoned link forever. So this
- * dates the link by the host's own last heartbeat, and gives them rule 9.2's
- * window from it to come back.
- */
-export function isHostReachable(rec: SessionRecord | null, now: number): boolean {
-  if (!rec || rec.terminated) return false;
-  if (isPartyPresent(rec, 'host', now)) return true;
-  // Rule 9.2: "if one of the players is on the link and other left,
-  // stale_occupied applies" — a player 2 sitting on the link waiting is one of
-  // the players on it, so player 1 gets the long window to come back, not the
-  // short one meant for a link nobody is at.
-  const occupied = rec.joined || isPartyPresent(rec, 'joiner', now);
-  const window = occupied ? STALE_OCCUPIED_MS : STALE_UNOCCUPIED_MS;
-  return now - Math.max(rec.hostAt ?? 0, rec.createdAt ?? 0) <= window;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -178,22 +233,13 @@ export class LobbyRegistryService {
   }
 
   /**
-   * Rule 9: is the host of Battle{n} still within their window to come back?
-   * This is the question a knocking player 2 needs answered — see
-   * `isHostReachable` for why it is not the same as "is the link alive".
-   */
-  async isHostAlive(n: number): Promise<boolean> {
-    return isHostReachable(await this.read(n), this.now());
-  }
-
-  /**
    * Reserve Battle{n} as the host. Atomic: fails if a live session already
    * holds it (so two hosts can't claim the same number), succeeds if the slot
    * is free or an expired/abandoned shell we can overwrite. (A leftover
    * `terminated` tombstone from before links were deleted on leave would have
    * its write rejected by the rules — the caller just tries another number.)
    */
-  async claim(n: number): Promise<boolean> {
+  async claim(n: number, hostId: string): Promise<boolean> {
     try {
       const res = await runTransaction(this.sessionRef(n), (cur: SessionRecord | null) => {
         if (isSessionAlive(cur, this.now())) return; // taken → abort
@@ -203,6 +249,7 @@ export class LobbyRegistryService {
           joinerAt: null,
           joined: false,
           terminated: false,
+          hostId,
         } as unknown as SessionRecord;
       });
       return res.committed;
@@ -212,41 +259,100 @@ export class LobbyRegistryService {
   }
 
   /**
-   * Rule 9: player 1 relaunching the app re-takes seat 0 on the link they
-   * created — "the one who created the link is player1 … when they return they
-   * should represent respective player number". Only for a link nobody has
-   * paired with yet: once a game has actually started its state lives in the
-   * two browsers, and there is deliberately no way to resume that (see the
-   * session service header), so a paired link is not re-hostable.
+   * Which seat this device holds on a link it is coming back to — rule 9's
+   * "when they return they should represent respective player number". The
+   * record decides, not the device's memory of it.
+   */
+  seatOn(rec: SessionRecord | null, clientId: string): SessionRole | null {
+    if (!isSessionAlive(rec, this.now())) return null;
+    if (rec?.hostId === clientId) return 'host';
+    if (rec?.joinerId === clientId) return 'joiner';
+    return null;
+  }
+
+  /**
+   * Take the empty seat on a live link, as player 2. Fails if somebody else is
+   * already in it — the game number is short and public enough that a stranger
+   * could otherwise walk into a game in progress.
+   */
+  async takeJoinerSeat(n: number, joinerId: string): Promise<boolean> {
+    const rec = await this.read(n);
+    if (!isSessionAlive(rec, this.now())) return false;
+    if (rec?.joinerId && rec.joinerId !== joinerId) return false;
+    if (rec?.hostId === joinerId) return false; // that is our own link
+    try {
+      await update(this.sessionRef(n), {
+        joinerAt: serverTimestamp(),
+        joined: true,
+        joinerId,
+      });
+    } catch {
+      return false;
+    }
+    this.bump('gamesStarted');
+    return true;
+  }
+
+  private movesRef(n: number) {
+    return ref(this.db(), `sessions/${n}/moves`);
+  }
+
+  /**
+   * Play a move by appending it to the session's log. The log *is* the game:
+   * both devices replay it into the same deterministic rules engine, so the
+   * database orders the moves and neither device has to agree with the other
+   * about anything else. Returns the key it was written under, so the sender
+   * can recognise its own move coming back.
+   */
+  sendMove(n: number, action: GameAction): string | null {
+    try {
+      const at = push(this.movesRef(n));
+      set(at, toWire(action)).catch(() => {});
+      return at.key;
+    } catch {
+      return null; // Firebase unreachable — the caller keeps its local state
+    }
+  }
+
+  /**
+   * Every move already in the log, oldest first, and then each new one as it
+   * lands. Replaying from the start is what makes a game resumable: a device
+   * that has just opened the app arrives at exactly the board everyone else is
+   * looking at, without anybody having to send it anything.
+   */
+  watchMoves(n: number, cb: (action: GameAction, key: string) => void): () => void {
+    return onChildAdded(this.movesRef(n), (snap) => {
+      const action = toAction(snap.val());
+      if (action && snap.key) cb(action, snap.key);
+    });
+  }
+
+  /**
+   * Rule 9: re-take the seat this device already holds — "when they return they
+   * should represent respective player number". Works for either seat and, now
+   * that the moves live here rather than in the two browsers, for a game
+   * already in progress: the board is rebuilt by replaying the log.
    *
    * Fails (and the caller falls back to the lobby) if the link died, was
-   * terminated, already paired up, or Firebase can't be reached — in which case
-   * we cannot know the number is still ours, so we must not take it.
+   * terminated, is not ours, or Firebase can't be reached — in which case we
+   * cannot know the seat is still ours, so we must not take it.
    */
-  async reclaimHost(n: number): Promise<boolean> {
+  async reclaimSeat(n: number, clientId: string): Promise<Seat | null> {
     // Read-then-write rather than a transaction: on a fresh page load (exactly
     // the reopen case) the client has no cached value, and a transaction that
     // aborts on the initial null never reaches the server — so the reclaim
     // would always fail. get() forces a server read; there's no real contention
     // here (only the returning owner reclaims its own seat).
     const rec = await this.read(n);
-    if (!isSessionAlive(rec, this.now()) || rec?.joined) return false;
+    const role = this.seatOn(rec, clientId);
+    if (!role) return null;
     try {
-      await update(this.sessionRef(n), { hostAt: serverTimestamp() });
-      return true;
+      const field = role === 'host' ? 'hostAt' : 'joinerAt';
+      await update(this.sessionRef(n), { [field]: serverTimestamp() });
+      return { role, joined: rec?.joined === true };
     } catch {
-      return false;
+      return null;
     }
-  }
-
-  /** Player 2 has connected: mark the session occupied and record presence. */
-  async markJoined(n: number): Promise<void> {
-    try {
-      await update(this.sessionRef(n), { joinerAt: serverTimestamp(), joined: true });
-    } catch {
-      // best-effort — a missed write just means the link ages a bit faster
-    }
-    this.bump('gamesStarted');
   }
 
   /**

@@ -22,7 +22,7 @@
                already there rather than watching the same "waiting" line. -->
           @if (session.joinerWaiting()) {
             <p id="host-joiner-waiting" class="waiting">
-              They’re on the link — connecting<span class="dots"></span>
+              They’re on the link — starting<span class="dots"></span>
             </p>
           } @else {
             <p id="host-waiting" class="waiting">
@@ -42,13 +42,11 @@
         <p id="joining-waiting" class="waiting">
           Joining {{ session.gameId() }}<span id="joining-waiting-dots" class="dots"></span>
         </p>
-        <!-- The host's phone has almost certainly put the app to sleep behind
-             the messaging app they sent the link from. Say so, so the wait
-             reads as a wait and player 2 knows what unblocks it. -->
+        <!-- Opening a link is a database read, not a wait for player 1 to
+             wake up: player 2 goes straight into the game and can place their
+             ship while player 1 is still in the messaging app. -->
         @if (session.waitingForHost()) {
-          <p id="joining-hint" class="hint">
-            Still knocking — ask them to open Ship Duel on their phone.
-          </p>
+          <p id="joining-hint" class="hint">Opening the game…</p>
         }
         <button id="cancel-join-btn" class="btn ghost" (click)="back()">Cancel</button>
       </section>

@@ -1,6 +1,6 @@
 # Battleship — project guide
 
-A peer-to-peer Battleship game built as an installable Angular PWA, mobile-first.
+A two-player Battleship game built as an installable Angular PWA, mobile-first.
 Deployed to GitHub Pages: https://techsimply.github.io/battleship/
 
 ## Game rules
@@ -42,7 +42,8 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - **Angular 21**, SCSS, signals, standalone components, no SSR, PWA via `@angular/service-worker`.
 - Angular is pinned to 21 because the owner's **Node is 22.15.0**, too old for Angular CLI 22
   (needs Node ≥ 22.22.3). Don't bump to 22 without a Node upgrade.
-- **PeerJS** provides the P2P transport (WebRTC over the free PeerJS cloud broker — no backend).
+- **Firebase Realtime Database** is the whole backend: session records *and* the move log
+  (see the architecture notes below for why the game left WebRTC). No server code of our own.
 
 ## Architecture
 
@@ -54,115 +55,66 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   both devices apply the same actions deterministically, derived state (exposure, bombed
   squares, scores) stays in sync with no extra messages. `reset()` = round reset (keeps score);
   `resetScores()` = new session.
-- `src/app/game/session.service.ts` — owns the PeerJS lifecycle. Host claims peer id
-  `techsimply-battleship-battle-{n}` (shown as the plain number), joiner connects by id; game
-  actions flow over the data channel, each numbered per sender and applied strictly in order
-  exactly once (`actionInOrder`). Handles join errors and opponent-disconnect. `parseGameId()`
-  accepts `Battle3` / `battle 3` / `3`.
-  **The joiner knocks, it does not knock once.** The normal shape of an invite is: host sends
-  the link from a messaging app, which puts their PWA to sleep and takes `Battle{n}` off the
-  broker with it, and player 2 opens the link during exactly that gap. A single dial answered
-  with `peer-unavailable` therefore means "asleep", not "gone", and failing on it made every
-  invite land on "Game over — opponent left". `dialHost()` now re-dials every 2s (the host
-  re-registers the moment they look at their screen), knocks carry a generation number so a
-  superseded dial's timeout or error cannot tear down the one that got through — but a knock
-  that *opens* is never refused, whatever its generation (see "A knock that gets through is
-  never thrown away"), and how long the knocking lasts is decided by the registry, not a
-  stopwatch: `watchHostLink()` asks
-  `registry.isHostAlive()` every 8s and pushes the deadline back to `JOIN_WINDOW_MS` on every
-  yes, up to a hard `MAX_JOIN_WINDOW_MS` of 5 minutes. Only a definite `false` ends it early
-  (a Firebase that is merely unreachable must never downgrade a live game to "opponent left").
-  A fixed 60s window was too short for the case below — a host whose app was *killed* needs a
-  relaunch, not a glance. `session.waitingForHost` tells the lobby to say so; the joiner also
-  heartbeats its own presence once it knows the link is real, which is what lets the hosting
-  screen say "They're on the link" (`session.joinerWaiting`) and keeps the link reclaimable
-  for player 1 while someone is actually waiting on it.
-  **A killed host re-takes its number on the next launch.** Freezing a backgrounded tab is
-  one thing; a phone may instead *kill* an installed PWA outright — which is exactly what can
-  happen while the host is in a messaging app sending the invite. Player 1 then cold-boots
-  into the lobby with no peer and no number, "New Game" would hand them a different one, and
-  the friend staring at "Still knocking" could not be reached by anything player 1 did. So
-  `hostWithId()` writes the number to `localStorage` (refreshed on every visibility change,
-  since the write before hiding is the one that survives the kill) and `resumeHostedLink()`
-  — called by `app.ts` on any load without a `?join=` param, and by `join()` when the number
-  typed/opened is our own — reclaims the seat in Firebase and hosts the *same* `Battle{n}`
-  again. It is only ever offered for a link that never paired: once a game has started its
-  state lives in the two browsers and still cannot be resumed. The memory is dropped as soon
-  as the link pairs up or the player leaves.
-  **A knock that gets through is never thrown away.** The two screens that used to stick
-  forever — player 1 on "Waiting for opponent", player 2 on "Still knocking", with no error
-  anywhere — were one bug. When the host is not on the broker, PeerJS *server* queues the
-  offer and answers `peer-unavailable` about five seconds later, and that answer names no
-  connection: it may well belong to a knock we have already replaced. Retiring the knock in
-  flight on the strength of it (`dialSeq++` in the error handler) meant hanging up on a host
-  who picked up at that moment — and since their side had opened, leaving them parked in a
-  game with nobody in it, refusing every knock that followed as "game full". So `dialHost()`
-  accepts any channel that opens while we are still looking for a host, `DIAL_TIMEOUT_MS` is
-  9s so the broker's own answer lands first, and a pairing must prove itself: both sides send
-  `hello` on attach and `abandonPairing()` drops one that says nothing within
-  `PAIRING_TIMEOUT_MS` — host back to `hosting`, joiner back to knocking. `markJoined()` and
-  `forgetHostedLink()` moved to `confirmPairing()` for the same reason: a ghost must not mark
-  the link occupied (which would block `reclaimHost()`) or cost player 1 their cold-boot
-  recovery.
-  **A socket can die without PeerJS noticing.** A frozen webview hands back a socket that
-  reads as open and carries nothing. Nothing errors, so none of the recovery above runs.
-  Both ends now spot it by other means. The joiner counts knocks that got *no* answer at all
-  — the broker's "no such peer" proves the socket works, silence is the symptom — and after
-  `MAX_SILENT_DIALS` `redial()` builds a fresh peer instead of knocking on a corpse. The host
-  uses the registry: player 2 heartbeats onto the link while knocking, so
-  `watchForSilentKnocks()` re-takes the number when someone has been demonstrably there for
-  `HOST_STALE_MS` and not one knock has arrived. Both are reset on `visibilitychange`, since
-  frozen timers have not been counting.
-  **Cancel is not Leave.** A joiner whose knock never got through does not hold the link, so
-  `leave()` only `terminate()`s from `hosting` / `playing` / `disconnected` — cancelling a
-  join used to delete the host's record, killing the game for its owner too.
-  **There is deliberately no reconnect/resume.** Losing the data channel — closing the tab,
-  quitting the PWA, a network drop — ends the game: both sides go to `disconnected` and must
-  start a new one. An earlier version tried to resume by replaying missed actions, but the
-  game state lives only in the two browsers, so any gap desynced the boards (players seeing
-  different bombed squares, or a win only one side saw). Doing this properly means persisting
-  the authoritative game server-side, not replaying deltas — see "Possible next steps".
-  The one exception: if the host's connection dies before any action crossed it, that is the
-  invite-link ghost dial, so the host just goes back to `hosting` (nothing was played).
-  Broker-socket loss triggers a re-register retry loop so the id stays claimed while waiting
-  for player 2. **Mind the order PeerJS reports that loss in:** it emits an `error`
-  (`network` / `socket-closed` / `socket-error`) *before* the `disconnected` the retry loop
-  listens for, so an error handler that treats those as fatal kills the peer and the retry
-  loop never runs — which is what used to dump a host into "Connection problem — check your
-  internet" the moment they left the app to send the invite.
-  **Recovery is a property of the session, not of a `Peer`.** PeerJS aborts and discards
-  peers freely — a socket that never carried an id, or (very common) a reconnect that lands
-  while the broker is still holding the id from the socket that just died, which comes back
-  as `unavailable-id`. Every replacement peer arrives with no history, so judging it on its
-  own history put that same error back on screen for a host who had been sitting on a
-  claimed number. Hence `brokerSeen` on the service: once we have held a number, broker
-  trouble is ridden out — reconnect if the peer survives, otherwise `rebuildPeer()` claims
-  the *same* reserved number again so the link already shared keeps working — and the error
-  screen is reached only with the app on screen (never while backgrounded) and the retry
-  budget genuinely spent. `peerErrorAction()` classifies; `session.peer-drop.spec.ts` drives
-  the whole chain against a stand-in Peer. Leaving sends `bye`. Dev builds expose
-  `__battleshipDrop()` to sever the channel in tests.
-- `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database bookkeeping for
-  rule 9 (project `battleship-p2p`, europe-west1; rules in `database.rules.json`). Holds one
-  `/sessions/{n}` record per game: `claim()` reserves a number atomically, presence heartbeats
-  keep it alive, `isSessionAlive()` applies the rule 9.2 TTLs (2 min never-paired / 5 min once
-  paired, measured from the newest heartbeat), and `terminate()` deletes the record on Leave so
-  the number is reusable. `isPartyPresent()` drives `session.opponentPresent`, which tells a
-  player their opponent closed the app. `reclaimHost()` is how a relaunched player 1 gets its
-  seat back (rule 9's "the one who created the link is player1 … when they return they should
-  represent respective player number"); it refuses a link that has paired, because that game
-  cannot be resumed. `isHostReachable()` is deliberately *not* `isSessionAlive()`: a knocking
-  player 2 heartbeats itself onto the record, and a joiner that read its own presence as proof
-  of life would knock on an abandoned link forever — so it dates the link by the host's own
-  last beat, with the occupied window while a player 2 waits. Gameplay never goes through Firebase. If Firebase is
-  unreachable the app degrades to a PeerJS-only claim. Note `reclaim()` must do an explicit
-  `get()` then `update()` — a `runTransaction` sees `null` on a cold page load and aborts
-  without ever reaching the server.
+- `src/app/game/session.service.ts` — the lobby state machine and this device's seat.
+  `newGame()` claims a random free number, `join()` takes the empty seat on a link,
+  `resumeSession()` walks back into the game this device was in, `act()` applies a tap
+  locally and appends it to the log. `parseGameId()` accepts `Battle3` / `battle 3` / `3`.
+  **There is nobody to find any more.** Player 2 does not dial player 1 and does not wait
+  for them to be awake: the seat is a field on a database record, so they are in the game
+  immediately and can place their ship while player 1 is still in the messaging app they
+  sent the invite from. This deleted the whole family of bugs the file used to be built
+  around — knocking, ghost pairings, ids the broker was still holding, sockets that died
+  without saying so, `hello` handshakes to prove somebody was there.
+  **A seat belongs to a device, not to a connection.** Each device stores a `clientId` in
+  `localStorage`; `claim()` writes it as `hostId` and `takeJoinerSeat()` as `joinerId`.
+  `registry.seatOn()` reads the seat back off the record, so rule 9's "when they return they
+  should represent respective player number" is settled by the record rather than by what the
+  app happens to remember — and a stranger who guesses a live number is turned away instead
+  of walking into someone's game.
+  **Leaving is not losing.** Closing the app, a flat battery or a tunnel is a pause: the board
+  is on the server, so `app.ts` calls `resumeSession()` on any load without `?join=` and the
+  player lands back on their own board mid-game. Only the Leave button ends a game — it
+  terminates the link for both players (`state === 'disconnected'` on the other side).
+  **Applying a move exactly once.** The acting device applies its tap immediately, so the
+  board responds under the finger, then writes it; every device (the writer included) also
+  sees it arrive off `onChildAdded`. `ownMoves` holds the keys this device wrote — `push()`
+  hands the key back before the write lands — so its own echo is dropped once and only once.
+  A replay after a relaunch starts with an empty set, so on that path the *same* moves are
+  applied, which is exactly what rebuilding the board means.
+- `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database: session bookkeeping
+  for rule 9 **and the multiplayer transport** (project `battleship-p2p`, europe-west1; rules
+  in `database.rules.json`). One `/sessions/{n}` record per game: `claim()` reserves a number
+  atomically, presence heartbeats keep it alive, `isSessionAlive()` applies the rule 9.2 TTLs
+  (10 min never-paired / 24 h once paired, measured from the newest heartbeat), `terminate()`
+  deletes the record on Leave so the number is reusable, and `reclaimSeat()` gives a returning
+  device the seat its `clientId` holds. Under `moves` is an append-only log of every action:
+  `sendMove()` pushes one, `watchMoves()` replays the whole log and then follows it, and
+  `toAction()` parses defensively — anyone who knows a number can write to the database, so a
+  malformed record is skipped rather than fed to the rules engine. Because `GameService` is a
+  deterministic reducer, replaying the same log gives every device the same board, which is
+  what makes both sync and resume free.
+  **Why the game left WebRTC.** Gameplay used to run peer-to-peer over a data channel brokered
+  by the free PeerJS cloud, and it had three independent ways to fail on a phone: the broker
+  forgets a backgrounded host's id, its offer queue answers late enough to race the joiner's
+  own retries, and ICE cannot always cross a carrier NAT (the fallback being a free shared TURN
+  relay on one UDP port). Each one surfaced as two players staring at screens that never
+  changed. This is one WebSocket to Google on 443 — the same connection that was already
+  claiming the game number successfully on the very phones where the game would not start.
+  Latency is irrelevant to a turn-based game; the free tier's ~100 simultaneous connections
+  (two per game) is the ceiling worth watching.
+  **`reclaim` must do an explicit `get()` then `update()`** — a `runTransaction` sees `null` on
+  a cold page load and aborts without ever reaching the server.
+  **Rules are not deployed by the Pages workflow.** `database.rules.json` is deployed by
+  `firebase-hosting-merge.yml` (before hosting, so a failure leaves the working build up) or by
+  hand with `firebase deploy --only database`. A client that writes `moves` against rules that
+  do not know about them is a game that cannot be played, so rules go out first. Test them for
+  real with `npx firebase-tools emulators:start --only database` — it catches both rejected
+  writes and rules that do not parse (the file takes no comment keys, unlike `firebase.json`).
 - `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first). The host can copy an
   invite link (`…/?join={n}`, built from `document.baseURI`) that `app.ts` auto-joins on load,
   or share just the number for manual entry (digits-only field with a fixed "Battle" prefix).
-  "Play vs Computer" runs a local bot (session mode `'bot'`, no PeerJS): an effect in
-  `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
+  "Play vs Computer" runs a local bot (session mode `'bot'`, nothing written to the database):
+  an effect in `SessionService` feeds random-but-legal place/fire/move actions into `game.apply()` on a
   short thinking delay whenever the game waits on player 1.
 - `src/app/game/` — per-player game view of the one united board: your ship is drawn, the
   enemy's is hidden until it is wrecked or the game ends — a *burning* enemy is never drawn,
@@ -236,17 +188,29 @@ npx ng serve --port 4200                   # dev server
 
 ## Verifying changes
 
-`session.invite.spec.ts` runs the whole invite between **two real `SessionService`s** and a
-stand-in broker that behaves like the PeerJS one — it queues a connect to an id nobody holds
-and only answers `peer-unavailable` five seconds later, delivers a queued offer if the host
-registers inside that window, and can make the handshake crawl. That is what reproduces the
-knock-thrown-away and ghost-pairing wedges; assert a move *crossing*, not just that both sides
-say "playing", since two devices holding opposite ends of a dead channel say that too.
+`session.invite.spec.ts` runs the whole invite between **two real `SessionService`s** and one
+in-memory stand-in for the database (records, presence, the move log). It covers what the old
+transport could not do at all: player 2 joining while player 1's app is closed, either player
+relaunching mid-game and getting their board back, a stranger being turned away, and Leave
+ending it for both. Assert a move *crossing* — two devices looking at unrelated boards both
+say "playing" too.
 
-Beyond unit tests, the two-device flow is verified end-to-end by driving two isolated browser
-contexts with **Playwright + system Edge** (`channel: 'msedge'`, headless works) against the dev
-server over a real PeerJS connection. That test caught a real exposure-marker bug — keep using it
-for networked/multi-device changes.
+For anything touching the database, run the real thing:
+
+```bash
+npx firebase-tools@13 emulators:start --only database --project battleship-p2p   # needs Java
+```
+
+It loads `database.rules.json` and enforces it, so both halves get checked: that every write
+the client makes is accepted, and that malformed ones are not. It also reports rules that fail
+to *parse* — that is how the "no comment keys in a rules file" trap gets caught before a deploy.
+Drive it over REST (`http://127.0.0.1:9000/sessions/1234.json?ns=battleship-p2p-default-rtdb`).
+
+The two-device flow is verified end-to-end by driving two isolated browser contexts with
+**Playwright** against `ng serve` with `databaseURL` pointed at that emulator (remember to put
+`environment.ts` back). That is a real game between real browsers over the real SDK and the
+real rules — it is how "player 2 joins while player 1 is away" and "reload mid-game keeps the
+board" were confirmed, and it catches integration bugs the fakes cannot.
 
 ## Conventions & gotchas
 
@@ -262,11 +226,11 @@ for networked/multi-device changes.
 
 ## Possible next steps
 
-**Server-authoritative game state.** The big one, and the prerequisite for
-bringing back reconnect/resume: keep the board in Firebase (alongside the
-session record) instead of only in the two browsers, so a player who closes the
-app can rejoin the game exactly as it stood. Replaying deltas over P2P was tried
-and removed — it desynced the boards whenever the replay had a gap.
+**Spectating and history.** The move log makes both nearly free — a third subscriber could
+watch a game, and a finished one could be stepped through.
 
-TURN fallback for strict NATs (the free PeerJS cloud has no relay), random
-first player, real-world two-phone connection test, further PWA polish.
+**Pruning.** Nothing deletes an abandoned record before its TTL, and `moves` grows for the life
+of a session. Both are tiny, but a scheduled cleanup (or `onDisconnect` housekeeping) would
+keep the free tier comfortable if the game gets busy.
+
+Random first player, real-world two-phone connection test, further PWA polish.

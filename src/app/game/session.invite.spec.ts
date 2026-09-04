@@ -1,352 +1,383 @@
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { GameService } from './game.service';
-import { LobbyRegistryService } from './lobby-registry.service';
+import {
+  LobbyRegistryService,
+  Seat,
+  SessionRecord,
+  SessionRole,
+  isSessionAlive,
+  toAction,
+  toWire,
+} from './lobby-registry.service';
 
 /**
- * The invite, end to end, with two real sessions on either side of a stand-in
- * broker that behaves like the PeerJS one — including the two behaviours that
- * used to wedge a game for good:
+ * The whole invite, end to end, with two real sessions on either side of one
+ * in-memory stand-in for the Realtime Database — records, presence heartbeats
+ * and the append-only move log, with the same semantics the rules enforce.
  *
- *  - a connect to an id nobody is holding is *queued*, and only answered with
- *    `peer-unavailable` five seconds later, so that answer routinely arrives
- *    after the knock it belongs to has been replaced;
- *  - a queued offer is delivered if the host registers within that window, so a
- *    knock its owner has already given up on can still open on the host's side
- *    alone — the ghost.
+ * These are the cases the old WebRTC transport could not do at all, and they
+ * are the reason it was replaced: player 2 opening a link while player 1 is
+ * still in their messaging app, and either player closing the app mid-game and
+ * coming back to the board exactly as they left it.
  *
- * Both are exactly what happens when player 1 sends the link from a messaging
- * app, their phone freezes the tab, and player 2 opens it during that gap.
- * The real two-device check (Playwright + system Edge, see CLAUDE.md) still
- * owns the WebRTC layer; this owns the choreography.
+ * Assert a move *crossing*, not just that both sides say "playing" — two
+ * devices looking at unrelated boards say that too.
  */
 
-const EXPIRE_MS = 5_000; // PeerJS server's default queue timeout
+/** Everything the two sessions share: this is the database. */
+class Db {
+  sessions = new Map<number, SessionRecord>();
+  moves = new Map<number, { key: string; raw: unknown }[]>();
+  watchers = new Map<number, ((rec: SessionRecord | null) => void)[]>();
+  moveWatchers = new Map<number, ((raw: unknown, key: string) => void)[]>();
+  private seq = 0;
 
-/** One end of a data channel. The two ends are linked, and can be unlinked. */
-class Channel {
-  private handlers: Record<string, ((arg?: unknown) => void)[]> = {};
-  peer!: Channel;
-  open = false;
-  closed = false;
+  now = 1_700_000_000_000;
 
-  on(event: string, cb: (arg?: unknown) => void): this {
-    (this.handlers[event] ??= []).push(cb);
-    return this;
+  nextKey(): string {
+    return `k${String(++this.seq).padStart(4, '0')}`;
   }
 
-  emit(event: string, arg?: unknown): void {
-    for (const cb of this.handlers[event] ?? []) cb(arg);
-  }
-
-  send(msg: unknown): void {
-    // A channel whose owner has hung up carries nothing — and says nothing
-    // about it either, which is what makes a ghost a ghost.
-    if (!this.open || this.closed || !this.peer.open) return;
-    setTimeout(() => this.peer.emit('data', msg), 0);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    const wasOpen = this.open;
-    this.open = false;
-    // Only a channel that had actually come up tells the other end it is going.
-    if (wasOpen && this.peer.open) setTimeout(() => this.peer.emit('close'), 0);
+  publish(n: number): void {
+    const rec = this.sessions.get(n) ?? null;
+    for (const w of [...(this.watchers.get(n) ?? [])]) w(rec ? { ...rec } : null);
   }
 }
 
-/** The broker: who is registered, and what is queued for whoever is not. */
-class Broker {
-  static registered = new Map<string, FakePeer>();
-  static queue: { from: FakePeer; to: string; caller: Channel; at: number }[] = [];
+/**
+ * A LobbyRegistryService backed by `Db` instead of Firebase. Deliberately the
+ * real logic (`isSessionAlive`, `toWire`/`toAction`) around a fake socket, so
+ * what these tests exercise is the session choreography and not a re-statement
+ * of it.
+ */
+class FakeRegistry {
+  constructor(private db: Db) {}
 
-  /** How long the WebRTC handshake takes before the channel actually opens. */
-  static answerDelay = 0;
+  private presence: { n: number; role: SessionRole } | null = null;
 
-  static reset(): void {
-    Broker.registered.clear();
-    Broker.queue = [];
-    Broker.answerDelay = 0;
+  serverNow = () => this.db.now;
+
+  async read(n: number): Promise<SessionRecord | null> {
+    const rec = this.db.sessions.get(n);
+    return rec ? { ...rec } : null;
   }
 
-  static register(peer: FakePeer): void {
-    Broker.registered.set(peer.id!, peer);
-    // Deliver anything still queued for this id — the stale-offer case.
-    const due = Broker.queue.filter((q) => q.to === peer.id);
-    Broker.queue = Broker.queue.filter((q) => q.to !== peer.id);
-    for (const q of due) Broker.deliver(peer, q.caller);
-  }
-
-  static unregister(peer: FakePeer): void {
-    if (peer.id && Broker.registered.get(peer.id) === peer) Broker.registered.delete(peer.id);
-  }
-
-  static deliver(host: FakePeer, caller: Channel): void {
-    const callee = new Channel();
-    callee.peer = caller;
-    caller.peer = callee;
-    setTimeout(() => {
-      host.emit('connection', callee);
-      setTimeout(() => {
-        // The host's side comes up first (it answers), then the caller's — and
-        // a handshake slow enough to outlast the caller's patience is how a
-        // knock nobody is waiting on any more opens on the host's side alone.
-        if (!callee.closed) {
-          callee.open = true;
-          callee.emit('open');
-        }
-        setTimeout(() => {
-          if (caller.closed) return; // the caller gave up while we answered
-          caller.open = true;
-          caller.emit('open');
-        }, 0);
-      }, Broker.answerDelay);
-    }, 0);
-  }
-}
-
-let peerSeq = 0;
-
-class FakePeer {
-  private handlers: Record<string, ((arg?: unknown) => void)[]> = {};
-  id: string;
-  destroyed = false;
-  disconnected = false;
-  open = false;
-
-  constructor(id?: string) {
-    this.id = id ?? `anon-${++peerSeq}`;
-    // The broker answers a fresh socket a tick later, like a real one.
-    setTimeout(() => {
-      if (this.destroyed) return;
-      if (Broker.registered.has(this.id)) {
-        this.emit('error', Object.assign(new Error('ID is taken'), { type: 'unavailable-id' }));
-        return;
-      }
-      this.open = true;
-      Broker.register(this);
-      this.emit('open', this.id);
-    }, 0);
-  }
-
-  on(event: string, cb: (arg?: unknown) => void): this {
-    (this.handlers[event] ??= []).push(cb);
-    return this;
-  }
-
-  emit(event: string, arg?: unknown): void {
-    for (const cb of this.handlers[event] ?? []) cb(arg);
-  }
-
-  destroy(): void {
-    this.destroyed = true;
-    this.open = false;
-    Broker.unregister(this);
-  }
-
-  /** The tab is frozen: reconnects go nowhere until the player comes back. */
-  private frozen = false;
-
-  reconnect(): void {
-    if (this.frozen) return; // still asleep — PeerJS just keeps trying
-    this.disconnected = false;
-    this.open = true;
-    Broker.register(this);
-  }
-
-  connect(target: string): Channel {
-    const caller = new Channel();
-    caller.peer = new Channel(); // replaced on delivery
-    caller.peer.peer = caller;
-    const host = Broker.registered.get(target);
-    if (host) {
-      Broker.deliver(host, caller);
-      return caller;
-    }
-    // Nobody is holding that id: queue the offer, and answer much later.
-    const entry = { from: this, to: target, caller, at: Date.now() };
-    Broker.queue.push(entry);
-    setTimeout(() => {
-      if (!Broker.queue.includes(entry)) return; // delivered after all
-      Broker.queue = Broker.queue.filter((q) => q !== entry);
-      if (this.destroyed) return;
-      this.emit(
-        'error',
-        Object.assign(new Error(`Could not connect to peer ${target}`), {
-          type: 'peer-unavailable',
-        }),
-      );
-    }, EXPIRE_MS);
-    return caller;
-  }
-
-  /** The phone froze this tab: the socket goes, PeerJS says so. */
-  freeze(): void {
-    this.frozen = true;
-    this.open = false;
-    Broker.unregister(this);
-    this.emit('error', Object.assign(new Error('Lost connection to server.'), { type: 'network' }));
-    this.disconnected = true;
-    this.emit('disconnected', this.id);
-  }
-
-  /** Player 1 looks at their screen again and the socket comes back. */
-  thaw(): void {
-    this.frozen = false;
-    this.reconnect();
-    this.emit('open', this.id);
-  }
-}
-
-vi.mock('peerjs', () => ({ default: FakePeer }));
-
-/** Firebase stand-in shared by both sessions, so presence crosses between them. */
-class SharedRegistry {
-  static records = new Map<number, { host: number; joiner: number; joined: boolean }>();
-
-  claim = vi.fn(async (n: number) => {
-    if (SharedRegistry.records.has(n)) return false;
-    SharedRegistry.records.set(n, { host: Date.now(), joiner: 0, joined: false });
+  async claim(n: number, hostId: string): Promise<boolean> {
+    if (isSessionAlive(this.db.sessions.get(n) ?? null, this.db.now)) return false;
+    this.db.sessions.set(n, {
+      createdAt: this.db.now,
+      hostAt: this.db.now,
+      joinerAt: null,
+      joined: false,
+      terminated: false,
+      hostId,
+    });
+    this.db.moves.delete(n);
+    this.db.publish(n);
     return true;
+  }
+
+  seatOn(rec: SessionRecord | null, clientId: string): SessionRole | null {
+    if (!isSessionAlive(rec, this.db.now)) return null;
+    if (rec?.hostId === clientId) return 'host';
+    if (rec?.joinerId === clientId) return 'joiner';
+    return null;
+  }
+
+  async reclaimSeat(n: number, clientId: string): Promise<Seat | null> {
+    const rec = this.db.sessions.get(n) ?? null;
+    const role = this.seatOn(rec, clientId);
+    if (!role || !rec) return null;
+    rec[role === 'host' ? 'hostAt' : 'joinerAt'] = this.db.now;
+    this.db.publish(n);
+    return { role, joined: rec.joined === true };
+  }
+
+  async takeJoinerSeat(n: number, joinerId: string): Promise<boolean> {
+    const rec = this.db.sessions.get(n) ?? null;
+    if (!isSessionAlive(rec, this.db.now) || !rec) return false;
+    if (rec.joinerId && rec.joinerId !== joinerId) return false;
+    if (rec.hostId === joinerId) return false;
+    rec.joinerId = joinerId;
+    rec.joinerAt = this.db.now;
+    rec.joined = true;
+    this.db.publish(n);
+    return true;
+  }
+
+  observe(n: number, cb: (rec: SessionRecord | null) => void): () => void {
+    const list = this.db.watchers.get(n) ?? [];
+    list.push(cb);
+    this.db.watchers.set(n, list);
+    // Firebase delivers the current value on subscribe, on its own tick.
+    setTimeout(() => cb(this.db.sessions.get(n) ? { ...this.db.sessions.get(n)! } : null), 0);
+    return () =>
+      this.db.watchers.set(
+        n,
+        (this.db.watchers.get(n) ?? []).filter((w) => w !== cb),
+      );
+  }
+
+  sendMove(n: number, action: Parameters<typeof toWire>[0]): string | null {
+    const key = this.db.nextKey();
+    const raw = toWire(action);
+    const log = this.db.moves.get(n) ?? [];
+    log.push({ key, raw });
+    this.db.moves.set(n, log);
+    // Delivered to every listener, including the writer's own.
+    setTimeout(() => {
+      for (const w of [...(this.db.moveWatchers.get(n) ?? [])]) w(raw, key);
+    }, 0);
+    return key;
+  }
+
+  watchMoves(
+    n: number,
+    cb: (action: NonNullable<ReturnType<typeof toAction>>, key: string) => void,
+  ) {
+    const wrapped = (raw: unknown, key: string) => {
+      const action = toAction(raw);
+      if (action) cb(action, key);
+    };
+    const list = this.db.moveWatchers.get(n) ?? [];
+    list.push(wrapped);
+    this.db.moveWatchers.set(n, list);
+    // …and the backlog first, oldest to newest: that is the replay.
+    setTimeout(() => {
+      for (const m of this.db.moves.get(n) ?? []) wrapped(m.raw, m.key);
+    }, 0);
+    return () =>
+      this.db.moveWatchers.set(
+        n,
+        (this.db.moveWatchers.get(n) ?? []).filter((w) => w !== wrapped),
+      );
+  }
+
+  startPresence = vi.fn((n: number, role: SessionRole) => {
+    this.presence = { n, role };
+    const rec = this.db.sessions.get(n);
+    if (!rec) return;
+    rec[role === 'host' ? 'hostAt' : 'joinerAt'] = this.db.now;
+    this.db.publish(n);
   });
-  isAlive = vi.fn(async (n: number) => SharedRegistry.records.has(n));
-  isHostAlive = vi.fn(async (n: number) => SharedRegistry.records.has(n));
-  reclaimHost = vi.fn(async () => true);
-  markJoined = vi.fn(async (n: number) => {
-    const rec = SharedRegistry.records.get(n);
-    if (rec) rec.joined = true;
+
+  stopPresence = vi.fn(() => {
+    this.presence = null;
   });
-  terminate = vi.fn(async (n: number) => void SharedRegistry.records.delete(n));
-  startPresence = vi.fn((n: number, role: string) => {
-    const rec = SharedRegistry.records.get(n) ?? { host: 0, joiner: 0, joined: false };
-    rec[role === 'host' ? 'host' : 'joiner'] = Date.now();
-    SharedRegistry.records.set(n, rec);
-  });
-  stopPresence = vi.fn();
-  observe = vi.fn(() => () => {});
-  serverNow = vi.fn(() => Date.now());
+
+  async terminate(n: number): Promise<void> {
+    this.stopPresence();
+    this.db.sessions.delete(n);
+    this.db.moves.delete(n);
+    this.db.publish(n);
+  }
+
   bump = vi.fn();
 }
 
 const { SessionService } = await import('./session.service');
 type SessionServiceType = InstanceType<typeof SessionService>;
 
-/** A session of its own, with its own board, as if on its own phone. */
-function newSession(): { session: SessionServiceType; game: GameService } {
-  TestBed.resetTestingModule();
-  TestBed.configureTestingModule({
-    providers: [SessionService, { provide: LobbyRegistryService, useValue: new SharedRegistry() }],
-  });
-  return { session: TestBed.inject(SessionService), game: TestBed.inject(GameService) };
+/** One player: their own session, their own board, their own localStorage. */
+interface Device {
+  session: SessionServiceType;
+  game: GameService;
+  storage: Record<string, string>;
 }
 
-describe('an invite, from the link to both boards', () => {
-  let host: SessionServiceType;
-  let joiner: SessionServiceType;
-  let hostGame: GameService;
-  let joinerGame: GameService;
+describe('a game that lives on the server', () => {
+  let db: Db;
+  let p1: Device;
+  let p2: Device;
+  let active: Record<string, string>;
+
+  /**
+   * localStorage is per device, not per test run: swap the backing object as
+   * each session is built and whenever one is driven, so player 1's remembered
+   * game and client id are not player 2's.
+   */
+  function useStorage(store: Record<string, string>): void {
+    active = store;
+  }
+
+  function newDevice(storage: Record<string, string> = {}): Device {
+    useStorage(storage);
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        SessionService,
+        { provide: LobbyRegistryService, useValue: new FakeRegistry(db) },
+      ],
+    });
+    return { session: TestBed.inject(SessionService), game: TestBed.inject(GameService), storage };
+  }
+
+  /**
+   * The app is killed and opened again: everything in memory is gone and only
+   * localStorage carries over, which is exactly what a phone reclaiming a
+   * backgrounded PWA does.
+   */
+  async function relaunch(d: Device): Promise<Device> {
+    const fresh = newDevice(d.storage);
+    await vi.advanceTimersByTimeAsync(50);
+    return fresh;
+  }
+
+  /** Run something as this device, with its own storage in place. */
+  async function as<T>(d: Device, fn: () => T | Promise<T>): Promise<T> {
+    useStorage(d.storage);
+    const out = await fn();
+    await vi.advanceTimersByTimeAsync(50);
+    return out;
+  }
 
   beforeEach(() => {
     vi.useFakeTimers();
-    Broker.reset();
-    SharedRegistry.records.clear();
-    localStorage.clear();
-    ({ session: host, game: hostGame } = newSession());
-    ({ session: joiner, game: joinerGame } = newSession());
+    db = new Db();
+    active = {};
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation((k: string) => active[k] ?? null);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k: string, v: string) => {
+      active[k] = v;
+    });
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation((k: string) => {
+      delete active[k];
+    });
+    p1 = newDevice();
+    p2 = newDevice();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  /**
-   * Both sides say "playing" — but so do two devices holding opposite ends of
-   * a channel that carries nothing. The proof is a move crossing: place a ship
-   * from each side and see both boards agree about both of them.
-   */
+  async function hostAGame(): Promise<string> {
+    await as(p1, () => p1.session.newGame());
+    expect(p1.session.state()).toBe('hosting');
+    return p1.session.gameId()!;
+  }
+
+  /** Both boards agree about both ships: the moves really crossed. */
   async function expectARealGame(): Promise<void> {
-    expect([host.state(), joiner.state()]).toEqual(['playing', 'playing']);
-    host.act({ x: 0, y: 0 });
-    joiner.act({ x: 3, y: 4 });
-    await vi.advanceTimersByTimeAsync(500);
-    for (const game of [hostGame, joinerGame]) {
-      expect(game.players()[0].ship).toEqual({ x: 0, y: 0 });
-      expect(game.players()[1].ship).toEqual({ x: 3, y: 4 });
+    expect([p1.session.state(), p2.session.state()]).toEqual(['playing', 'playing']);
+    await as(p1, () => p1.session.act({ x: 0, y: 0 }));
+    await as(p2, () => p2.session.act({ x: 3, y: 4 }));
+    for (const d of [p1, p2]) {
+      expect(d.game.players()[0].ship).toEqual({ x: 0, y: 0 });
+      expect(d.game.players()[1].ship).toEqual({ x: 3, y: 4 });
+      expect(d.game.phase()).toBe('fire');
     }
   }
 
-  async function hostAGame(): Promise<string> {
-    host.newGame();
-    await vi.advanceTimersByTimeAsync(50);
-    expect(host.state()).toBe('hosting');
-    // These are two phones, not two tabs: player 2 must not find player 1's
-    // remembered link in storage and take the number for their own.
-    localStorage.clear();
-    return host.gameId()!;
-  }
-
-  it('pairs both sides when the host is awake', async () => {
+  it('pairs both players and carries their moves', async () => {
     const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
 
-    joiner.join(id);
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(joiner.myPlayer()).toBe(1);
-    expect(host.myPlayer()).toBe(0);
-
-    // Both sides greet each other, so neither drops the pairing when the
-    // window for proving it is real runs out.
-    await vi.advanceTimersByTimeAsync(10_000);
-    await expectARealGame();
-    expect(hostGame.phase()).toBe('fire');
-    expect(joinerGame.phase()).toBe('fire');
-  });
-
-  it('pairs when player 2 opens the link while the host’s phone is asleep', async () => {
-    // The shape of every real invite: the link is sent from a messaging app,
-    // which freezes the host's tab and takes its id off the broker, and player
-    // 2 opens it during exactly that gap.
-    const id = await hostAGame();
-    const hostPeer = [...Broker.registered.values()][0];
-    hostPeer.freeze();
-
-    joiner.join(id);
-    await vi.advanceTimersByTimeAsync(6_000); // the broker expires the knock
-    expect(joiner.state()).toBe('joining');
-    expect(joiner.waitingForHost()).toBe(true); // and the lobby says so
-
-    // Player 1 glances at their phone twenty seconds in — knocks and their
-    // expiries are overlapping by now, which is what used to lose the one that
-    // got through.
-    await vi.advanceTimersByTimeAsync(14_000);
-    hostPeer.thaw();
-    await vi.advanceTimersByTimeAsync(15_000);
-
+    expect(p1.session.myPlayer()).toBe(0);
+    expect(p2.session.myPlayer()).toBe(1);
     await expectARealGame();
   });
 
-  it('recovers when a knock the joiner gave up on reaches the host', async () => {
-    // The ghost. The host comes back just in time for the broker to hand over
-    // a queued offer, but the handshake drags on past the point where player 2
-    // has given up on that knock — so the channel opens on the host's side
-    // alone. The host used to stay in that empty game and turn away every real
-    // knock after it, which is a wedge nothing could clear.
+  it('lets player 2 in while player 1 is still away', async () => {
+    // The shape of every invite: player 1 shares the link from a messaging app
+    // and their phone freezes the tab. Under the old transport there was
+    // nobody on the broker to dial and player 2 sat on "Still knocking".
+    // Nothing to dial now — the seat is on the record.
     const id = await hostAGame();
-    const hostPeer = [...Broker.registered.values()][0];
-    hostPeer.freeze();
+    p1 = await relaunch(p1); // player 1's app is gone
 
-    joiner.join(id);
-    await vi.advanceTimersByTimeAsync(4_900); // the knock is queued
-    Broker.answerDelay = 6_000; // …and the handshake will crawl
-    hostPeer.thaw();
-    await vi.advanceTimersByTimeAsync(11_000);
-    expect(joiner.state()).toBe('joining'); // player 2 moved on at 9s
-    Broker.answerDelay = 0; // the network settles
+    await as(p2, () => p2.session.join(id));
+    expect(p2.session.state()).toBe('playing');
+    await as(p2, () => p2.session.act({ x: 3, y: 4 })); // and they can play
 
-    await vi.advanceTimersByTimeAsync(30_000);
+    // Player 1 comes back to a game that started without them.
+    await as(p1, () => p1.session.resumeSession());
+    expect(p1.session.state()).toBe('playing');
+    expect(p1.session.myPlayer()).toBe(0);
+    expect(p1.game.players()[1].ship).toEqual({ x: 3, y: 4 });
+  });
 
-    expect(host.gameId()).toBe(id);
+  it('brings a player back to the board they left, mid-game', async () => {
+    const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
+    await as(p1, () => p1.session.act({ x: 0, y: 0 }));
+    await as(p2, () => p2.session.act({ x: 3, y: 4 }));
+    await as(p1, () => p1.session.act({ x: 2, y: 2 })); // player 1 fires
+
+    const before = JSON.stringify(p2.game.destroyed());
+    p2 = await relaunch(p2); // player 2's app is killed
+    await as(p2, () => p2.session.resumeSession());
+
+    expect(p2.session.state()).toBe('playing');
+    expect(p2.session.myPlayer()).toBe(1); // rule 9: same seat
+    expect(JSON.stringify(p2.game.destroyed())).toBe(before); // same board
+    expect(p2.game.players()[0].ship).toEqual({ x: 0, y: 0 });
+    expect(p2.game.players()[1].ship).toEqual({ x: 3, y: 4 });
+
+    // …and play continues into the resumed board: player 1 still owes the move
+    // that firing costs them (rule 5.4), and player 2 sees it land.
+    await as(p1, () => p1.session.act({ x: 1, y: 1 }));
+    expect(p2.game.players()[0].ship).toEqual({ x: 1, y: 1 });
+    expect(p2.game.currentPlayer()).toBe(1);
+  });
+
+  it('keeps player 1 in seat 0 when they open their own link', async () => {
+    const id = await hostAGame();
+    await as(p1, () => p1.session.join(id)); // tapped the invite they sent
+
+    expect(p1.session.state()).toBe('hosting'); // still their game, still waiting
+    expect(p1.session.myPlayer()).toBe(0);
+    await as(p2, () => p2.session.join(id));
     await expectARealGame();
+  });
+
+  it('turns away a stranger who guesses a game in progress', async () => {
+    const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
+
+    const p3 = newDevice();
+    await as(p3, () => p3.session.join(id));
+    expect(p3.session.state()).toBe('error');
+    expect(p3.session.errorMsg()).toMatch(/couldn’t find that game/i);
+    // …and the real game is untouched.
+    await expectARealGame();
+  });
+
+  it('ends the game for both when someone presses Leave', async () => {
+    const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
+    await as(p1, () => p1.session.leave());
+
+    expect(p1.session.state()).toBe('lobby');
+    expect(p2.session.state()).toBe('disconnected');
+    // And there is nothing left to come back to.
+    await as(p2, () => p2.session.leave());
+    expect(await p2.session.resumeSession()).toBe(false);
+  });
+
+  it('does not offer a link that has expired', async () => {
+    const id = await hostAGame();
+    expect(id).not.toBe('');
+    p1 = await relaunch(p1);
+    db.now += 11 * 60_000; // nobody ever joined: the number is recycled
+
+    expect(await as(p1, () => p1.session.resumeSession())).toBe(false);
+    expect(p1.session.state()).toBe('lobby');
+  });
+
+  it('applies each move once, however it arrives', async () => {
+    const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
+    await as(p1, () => p1.session.act({ x: 0, y: 0 }));
+    await as(p2, () => p2.session.act({ x: 3, y: 4 }));
+
+    // Player 1 fires; the shot must land on both boards exactly once, so the
+    // turn comes back to the same player on each of them.
+    await as(p1, () => p1.session.act({ x: 2, y: 2 }));
+    expect(p1.game.phase()).toBe('move');
+    expect(p2.game.phase()).toBe('move');
+    expect(p1.game.destroyed().filter(Boolean).length).toBe(1);
+    expect(p2.game.destroyed().filter(Boolean).length).toBe(1);
   });
 });

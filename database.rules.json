@@ -8,8 +8,20 @@
         "createdAt": { ".validate": "newData.isNumber() && newData.val() <= now" },
         "hostAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
         "joinerAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
-        "joined": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
+        "joined": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true || newData.parent().child('createdAt').val() >= now - 5000)" },
         "terminated": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
+        "hostId": { ".validate": "newData.isString() && newData.val().length <= 64" },
+        "joinerId": { ".validate": "newData.isString() && newData.val().length <= 64" },
+        "moves": {
+          "$moveId": {
+            ".validate": "!data.exists() && newData.hasChild('k')",
+            "k": { ".validate": "newData.isString() && newData.val().matches(/^(place|fire|move|reset)$/)" },
+            "p": { ".validate": "newData.isNumber() && (newData.val() == 0 || newData.val() == 1)" },
+            "x": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3" },
+            "y": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4" },
+            "$otherMoveField": { ".validate": false }
+          }
+        },
         "$other": { ".validate": false }
       }
     },

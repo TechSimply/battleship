@@ -24,7 +24,7 @@ export class App {
   private readonly ads = inject(GdAdsService);
 
   /** Shown in the top-left corner on every screen. */
-  protected readonly version = 'v0.50';
+  protected readonly version = 'v0.51';
 
   constructor() {
     // No-op unless we are inside GameDistribution's iframe.
@@ -37,11 +37,11 @@ export class App {
       history.replaceState(null, '', location.pathname);
       this.session.join(join);
     } else {
-      // Rule 9: a host whose phone killed the PWA (which is exactly what can
-      // happen while they are in a messaging app sending the invite) comes
-      // straight back onto the number they shared, so the link already sent
-      // starts working instead of leaving player 2 knocking at nobody.
-      void this.session.resumeHostedLink();
+      // Rule 9: the board lives on the server now, so a launch is a return.
+      // Whatever ended the last run — the phone killing a backgrounded PWA,
+      // a flat battery, a closed tab — the player comes back into the same
+      // seat of the same game, at the position they left it.
+      void this.session.resumeSession();
     }
   }
 

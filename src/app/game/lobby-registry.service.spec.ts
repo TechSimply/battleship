@@ -1,9 +1,5 @@
-import {
-  isHostReachable,
-  isPartyPresent,
-  isSessionAlive,
-  SessionRecord,
-} from './lobby-registry.service';
+import { isPartyPresent, isSessionAlive, SessionRecord, toAction, toWire } from './lobby-registry.service';
+import { GameAction } from './game.service';
 
 /** Rule 9.2 link lifetimes, mirrored from the service for readable tests. */
 const MIN = 60_000;
@@ -31,18 +27,29 @@ describe('isSessionAlive (rule 9 link liveness)', () => {
     expect(isSessionAlive(rec({ createdAt: now - 60 * MIN, joinerAt: now }), now)).toBe(true);
   });
 
-  it('never-paired link dies after the 2-minute unoccupied window', () => {
-    const empty = rec({ createdAt: now - 3 * MIN, hostAt: now - 3 * MIN, joined: false });
+  it('a link nobody joined is recycled after its short window', () => {
+    const empty = rec({ createdAt: now - 12 * MIN, hostAt: now - 12 * MIN, joined: false });
     expect(isSessionAlive(empty, now)).toBe(false);
-    const stillFresh = rec({ createdAt: now - 1 * MIN, hostAt: now - 1 * MIN, joined: false });
+    const stillFresh = rec({ createdAt: now - 5 * MIN, hostAt: now - 5 * MIN, joined: false });
     expect(isSessionAlive(stillFresh, now)).toBe(true);
   });
 
-  it('a paired link survives the longer 5-minute occupied window once empty', () => {
-    // both parties gone (timestamps stale), but the game had paired up
-    const paired = rec({ createdAt: now - 4 * MIN, hostAt: now - 4 * MIN, joinerAt: now - 4 * MIN, joined: true });
-    expect(isSessionAlive(paired, now)).toBe(true);
-    const expired = rec({ createdAt: now - 6 * MIN, hostAt: now - 6 * MIN, joinerAt: now - 6 * MIN, joined: true });
+  it('a game with two players in it survives a night away', () => {
+    // Both parties gone (timestamps stale), but the board is on the server and
+    // either of them can come back to it — so the link has to still be there.
+    const overnight = rec({
+      createdAt: now - 20 * 60 * MIN,
+      hostAt: now - 8 * 60 * MIN,
+      joinerAt: now - 8 * 60 * MIN,
+      joined: true,
+    });
+    expect(isSessionAlive(overnight, now)).toBe(true);
+    const expired = rec({
+      createdAt: now - 30 * 60 * MIN,
+      hostAt: now - 25 * 60 * MIN,
+      joinerAt: now - 25 * 60 * MIN,
+      joined: true,
+    });
     expect(isSessionAlive(expired, now)).toBe(false);
   });
 });
@@ -57,9 +64,10 @@ describe('isSessionAlive (rule 9 link liveness)', () => {
  */
 describe('a closed game stays reclaimable for its TTL', () => {
   it('is still alive right after both players leave a long game', () => {
-    // Created 30 min ago, actively played until ~10s ago, then both closed.
+    // Created a day and a half ago, actively played until ~10s ago, then both
+    // closed the app.
     const justLeft = rec({
-      createdAt: now - 30 * MIN,
+      createdAt: now - 36 * 60 * MIN,
       hostAt: now - 10_000,
       joinerAt: now - 10_000,
       joined: true,
@@ -67,58 +75,25 @@ describe('a closed game stays reclaimable for its TTL', () => {
     expect(isSessionAlive(justLeft, now)).toBe(true);
 
     // The same record if disconnect had nulled the slots: nothing left to date
-    // the session by but createdAt, so a 30-minute-old game reads as long dead.
-    const nulled = rec({ createdAt: now - 30 * MIN, hostAt: null, joinerAt: null, joined: true });
+    // the session by but createdAt, so a game played all afternoon reads as
+    // long dead the moment both players close the app.
+    const nulled = rec({
+      createdAt: now - 36 * 60 * MIN,
+      hostAt: null,
+      joinerAt: null,
+      joined: true,
+    });
     expect(isSessionAlive(nulled, now)).toBe(false);
   });
 
   it('still expires once the TTL passes with nobody back', () => {
     const abandoned = rec({
-      createdAt: now - 30 * MIN,
-      hostAt: now - 6 * MIN,
-      joinerAt: now - 6 * MIN,
+      createdAt: now - 40 * 60 * MIN,
+      hostAt: now - 26 * 60 * MIN,
+      joinerAt: now - 26 * 60 * MIN,
       joined: true,
     });
     expect(isSessionAlive(abandoned, now)).toBe(false);
-  });
-});
-
-/**
- * What a knocking player 2 asks before giving up. It must not be answered by
- * player 2's own heartbeat — they announce themselves on the link while they
- * wait (so it stays reclaimable for a host who is relaunching), and a joiner
- * that took its own presence as proof of life would knock on an abandoned link
- * until the hard cap.
- */
-describe('isHostReachable (is player 1 still coming?)', () => {
-  it('a host who is on the link is reachable', () => {
-    expect(isHostReachable(rec({ hostAt: now }), now)).toBe(true);
-  });
-
-  it('a host who has just closed the app still has their window', () => {
-    const away = rec({ createdAt: now - 2 * MIN, hostAt: now - 1 * MIN });
-    expect(isHostReachable(away, now)).toBe(true);
-  });
-
-  it('a host gone longer than the link lives is not', () => {
-    const gone = rec({ createdAt: now - 4 * MIN, hostAt: now - 3 * MIN });
-    expect(isHostReachable(gone, now)).toBe(false);
-  });
-
-  it('gives a host longer while a player 2 is waiting on the link (rule 9.2)', () => {
-    const waitedFor = rec({ createdAt: now - 4 * MIN, hostAt: now - 3 * MIN, joinerAt: now });
-    expect(isHostReachable(waitedFor, now)).toBe(true);
-  });
-
-  it('is not kept true forever by the waiting joiner’s own heartbeat', () => {
-    const abandoned = rec({ createdAt: now - 9 * MIN, hostAt: now - 9 * MIN, joinerAt: now });
-    expect(isSessionAlive(abandoned, now)).toBe(true); // someone is on the link…
-    expect(isHostReachable(abandoned, now)).toBe(false); // …but it isn't the host
-  });
-
-  it('a terminated or missing link is never reachable', () => {
-    expect(isHostReachable(rec({ hostAt: now, terminated: true }), now)).toBe(false);
-    expect(isHostReachable(null, now)).toBe(false);
   });
 });
 
@@ -142,5 +117,43 @@ describe('isPartyPresent (opponent-left signal)', () => {
 
   it('a missing record reads as absent', () => {
     expect(isPartyPresent(null, 'host', now)).toBe(false);
+  });
+});
+
+/**
+ * The move log is the game, and anyone who knows a game number can write to
+ * it — the database has no accounts. So what comes back off it is parsed, not
+ * trusted: a junk record is skipped rather than fed to the rules engine.
+ */
+describe('toAction / toWire (the move log)', () => {
+  const roundTrip = (a: GameAction) => toAction(toWire(a));
+
+  it('carries every kind of action there and back', () => {
+    const actions: GameAction[] = [
+      { kind: 'place', player: 0, c: { x: 0, y: 0 } },
+      { kind: 'fire', player: 1, c: { x: 3, y: 4 } },
+      { kind: 'move', player: 1, c: { x: 2, y: 1 } },
+      { kind: 'reset' },
+    ];
+    for (const a of actions) expect(roundTrip(a)).toEqual(a);
+  });
+
+  it('refuses anything that is not a move', () => {
+    expect(toAction(null)).toBeNull();
+    expect(toAction('place')).toBeNull();
+    expect(toAction({})).toBeNull();
+    expect(toAction({ k: 'explode', p: 0, x: 1, y: 1 })).toBeNull();
+  });
+
+  it('refuses a move that would land off the board', () => {
+    expect(toAction({ k: 'fire', p: 0, x: 4, y: 0 })).toBeNull();
+    expect(toAction({ k: 'fire', p: 0, x: 0, y: 5 })).toBeNull();
+    expect(toAction({ k: 'fire', p: 0, x: -1, y: 0 })).toBeNull();
+    expect(toAction({ k: 'fire', p: 0, x: 1.5, y: 0 })).toBeNull();
+  });
+
+  it('refuses a move from a player who does not exist', () => {
+    expect(toAction({ k: 'fire', p: 2, x: 1, y: 1 })).toBeNull();
+    expect(toAction({ k: 'fire', x: 1, y: 1 })).toBeNull();
   });
 });

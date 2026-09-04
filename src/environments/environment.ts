@@ -1,10 +1,9 @@
 /**
  * Firebase web config for the `battleship-p2p` project. These values are NOT
  * secrets — a web app ships them to every visitor by design; access is gated by
- * the Realtime Database security rules, not by hiding this config. Firebase is
- * used only for session bookkeeping (claiming Battle{n} ids, link liveness /
- * TTL, and remembering who is player 1 vs 2 — rule 9); actual gameplay still
- * flows peer-to-peer over PeerJS.
+ * the Realtime Database security rules, not by hiding this config. Firebase
+ * carries the whole game now: session bookkeeping (claiming Battle{n} ids, link
+ * liveness / TTL, who is player 1 vs 2 — rule 9) and every move played.
  */
 export const firebaseConfig = {
   apiKey: 'AIzaSyC8lRTY1XatVL6r8YC73RFsk6qASj3_oxo',

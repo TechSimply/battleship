@@ -18,6 +18,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci && npx ng build --configuration production
+      # The database rules are part of the app now that gameplay goes through
+      # the Realtime Database: a client that can write `moves` against rules
+      # that still reject them is a game that cannot be played. Deploy them
+      # *before* the client, so a failure here leaves the old, working build up.
+      - name: Deploy database rules
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-sa.json"
+          npx --yes firebase-tools@13 deploy --only database --project battleship-p2p --non-interactive
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_BATTLESHIP_P2P }}
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
