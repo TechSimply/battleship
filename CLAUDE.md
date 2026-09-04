@@ -32,13 +32,16 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   horizontal gauges above the board, with the little ship icon and the percentage in the
   ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so nobody reads this
   as the classic fleet game. On-screen wording never says "fleet".
-- **Shooting odds (rule 12):** a shot goes to one square, so its chance of hitting is one
-  square out of the ones the enemy could still be on — the same deduction the board already
-  highlights, counted instead of drawn. Both guns' odds are on screen, each on its own ship's
-  health bar, and the bar of whoever is aiming lights up; the fire prompt carries the number
-  too. Your own odds count the hunter's exclusion (your square, which the enemy cannot be on);
-  the enemy's are counted from public state alone, or the missing square would give their
-  position away (rule 12.4).
+- **Shooting odds (rule 12):** `chance = 1/|C|`, where `C` is every square the hunted ship
+  could still be on, and `0` when no square of `C` may be fired at. `C` has three cases —
+  never seen: the whole board bar craters and the hunter's own square; **seen and not since
+  forced to move: that one square** (rule 5.4's cornered ship, and the moment after a hit);
+  seen and forced to move: the usable neighbours of where it was seen, *minus* the square
+  itself. A hit is a sighting as much as a shot is (rule 6.2.1). Both guns' odds are on
+  screen, each on its own ship's health bar, and the bar of whoever is aiming lights up; the
+  fire prompt carries the number too. Your own odds count the hunter's exclusion (your square,
+  which the enemy cannot be on); the enemy's are counted from public state alone, or the
+  missing square would give their position away (rule 12.8).
 - **Sessions (rule 7):** a lobby offers *New Game* / *Join The Game*. New Game claims the
   lowest free `Battle{n}` id; the opponent joins by typing that id.
 - **Scoring (rule 8):** within a session, one victory = one point; score persists across
@@ -57,10 +60,16 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/game/game.service.ts` — pure rules engine. State in signals; every mutation is a
   serializable `GameAction` (`place` / `fire` / `move` / `reset`). `apply()` runs an action
   (local or received); `tryLocal(actor, coord)` validates a tap on the one board and returns
-  the action to mirror. `possibleShipSquares(target, excludeHunter?)` is the public deduction of
-  where a ship can still be, and `hitChance(target, asHunter)` is rule 12's percentage over it —
-  `asHunter` picks whether the hunter's own square is counted out, the one square that separates
-  your own odds from the odds you may be shown about the enemy's gun.
+  the action to mirror. `possibleShipSquares(target, excludeHunter?)` is rule 12's `C`, the
+  public deduction of where a ship can still be; `aimSquares()` is the part of it a shot may be
+  aimed at and `firableSquares()` rule 12's `F`; `hitChance(target, asHunter)` is the percentage
+  over them. `asHunter` picks whether the hunter's own square is counted out, the one square
+  that separates your own odds from the odds you may be shown about the enemy's gun. The
+  deduction rests on two fields kept on `PlayerState` as the actions run — `seenAt` (the last
+  square the ship was publicly pinned to, by its own shot **or** by a shell finding it) and
+  `movedSinceSeen` (whether rule 5.4 has since forced it off). Recording the forced move rather
+  than re-deriving it from the craters is what makes case (b) exact: a ship that fired with
+  nowhere to go is *known* to be where it fired from, not merely likely to be.
   Craters live in a single shared `destroyed` signal (rule 2.3), not per
   player; `rammed()` is the draw (`phase === 'gameover'` with `winner() === null`). Because
   both devices apply the same actions deterministically, derived state (exposure, bombed

@@ -99,23 +99,77 @@ That is a ram too - both wrecked, no point, before a single shot. It is not prev
 the second player "that square is taken" would tell them exactly where the first one is.
 
 12. Shooting odds
-12.1. A shot is aimed at one square, so the chance it finds the enemy is one square out of the
-squares that ship could still be on: 8 squares left for it is a 13% shot, 2 squares is 50%,
-and with only one square left it cannot miss. That is the same deduction the board already
-draws while a player takes aim - firing exposed the enemy's square (rule 5.2) and the forced
-move (rule 5.4) put them on one of its still usable neighbours - counted instead of highlighted.
-12.2. The number is on screen while the player is aiming: the prompt that asks for the shot
+12.1. A shot is aimed at one square, so the chance it finds the enemy is the chance that ship
+is standing on the square you pick. Everything the rules let a player work out about where it
+can be is public, and nothing else about it is, so the odds are one square out of the squares
+it could still be on: 8 squares left for it is a 13% shot, 2 squares is 50%, and with one
+square left it cannot miss.
+
+12.2. The formula.
+  Write:
+    B       = the 20 squares of the board (rule 2.2)
+    D       = the bombed squares (rule 5.3), shared by both ships (rule 2.3)
+    N(s)    = the up to 8 squares bordering s (rule 3)
+    U(s)    = N(s) - D, the squares a ship on s is allowed to move to (rules 3, 5.3)
+    h       = the square the shooting ship is standing on
+    F       = B - D - {h}, the squares a shot may be aimed at (rules 5.1, 5.3, and 2.3:
+              you cannot bomb the square under your own keel)
+    L       = the last square the hunted ship was pinned to in public - the square it was
+              seen firing from (rule 5.2) or the square a shell was seen finding it on
+              (rule 6.2.1), whichever happened last
+    moved   = whether rule 5.4 has since forced it off L
+
+  The squares it can still be on, C:
+    (a) never seen - it has neither fired nor been hit:   C = B - D - {h}
+    (b) seen at L and not forced off it since:            C = {L}
+    (c) seen at L and forced to move:                     C = U(L) - {h}
+
+  The odds:
+    chance = 1 / |C|   if C and F have a square in common
+    chance = 0         if they have none, or if C is empty
+
+12.3. Why each line reads as it does.
+  (a) Until a ship fires it has no reason to move and rule 5.4 has never made it, so it is
+  still on the square its owner placed it on (rule 4) - anywhere on the board. A bombed square
+  is not a hiding place: a bomb that landed on the ship was a hit, and a hit would have pinned
+  it into case (b), so every bombed square is one it was publicly shown not to be on. The
+  hunter's own square goes for the reason rule 11.5 gives - the two of them on one square is a
+  ram, and the round would already be over.
+  (b) A ship that fires is on the square it fired from (rule 5.2), and a ship a shell finds is
+  on the square it was hit on (rule 6.2.1). Until something moves it, that is not a guess. This
+  is where rule 5.4's cornered ship ends up - one that fired with every bordering square
+  already a crater does not move, and stays pinned on the square it fired from - and it is also
+  where a ship sits in the moment after a hit, before its owner's next turn.
+  (c) Once rule 5.4 has made it move it is on one of the squares it was allowed to move to, and
+  it is not on L any more: the forced move takes a square away as well as adding eight. It
+  cannot have moved onto the hunter, because rule 11 would have ended the round. A square of
+  U(L) that has been bombed since it sailed is out for case (a)'s reason - the bomb either
+  found empty water there or found the ship, and finding the ship pins it again.
+12.4. Every square of C is as likely as every other. Which square a ship sails to is its own
+choice and no rule says anything about it, so nothing may be read into it.
+12.5. A ship can be certain and untouchable at the same time. A shot may only be aimed at a
+square that is still usable and is not the shooter's own (rule 5.1, 5.3, 2.3), so a ship
+pinned by case (b) on its own crater - cornered by rule 5.4 on the square a hit left it
+standing on - cannot be fired at at all. The odds against it are 0, not 100. That is also why
+the chance stays 1 / |C| and does not become 1 / |C and F|: a square that cannot be shot at is
+still a square the ship may be hiding on, so it is one more way to miss, not one fewer
+candidate.
+12.6. The number is on screen while the player is aiming: the prompt that asks for the shot
 carries it, so a player knows what the shot is worth before taking it.
-12.3. Both odds are shown, each on its own health bar (rule 10): your own gun's chance sits on
+12.7. Both odds are shown, each on its own health bar (rule 10): your own gun's chance sits on
 your bar and the enemy gun's chance on theirs, so you can see how well they can see you at the
 same time as how well you can see them. The bar it sits on lights up while that gun is the one
 aiming.
-12.4. The odds must give away nothing the board does not. The hunter's own square is one square
-the hunted ship cannot be on - sailing into it would have rammed it (rule 11) - and a hunter
-knows where they are, so a player's own odds count that square out and match the highlighted
-squares exactly. The enemy's odds are counted from public state alone: the one square of
-difference, read off the percentage on their health bar, would say they are standing next to
+12.7.1. The odds are read off the board as it stands at that moment, not as it will stand when
+the shot is finally taken. So between firing and moving a player is pinned by case (b) on the
+square they fired from (rule 5.2) and the enemy's bar reads 100% - not a prediction that they
+are about to be hit, but the plainest statement of why rule 5.4 makes them move.
+12.8. The odds must give away nothing the board does not. The hunter's own square is the one
+square of C that depends on where the hunter is, and a hunter knows that, so a player's own
+odds count it out and match the squares the board highlights for them. The enemy's odds are
+counted from public state alone (C = B - D and C = U(L) with nothing taken out): the one square
+of difference, read off the percentage on their health bar, would say they are standing next to
 the square you last fired from.
-12.5. Before anybody has fired, every usable square still qualifies, so both sides start the
-round at 1 in 20. When the round is over there is nothing left to aim at and the odds come off
-the bars.
+12.9. Before anybody has been seen, every usable square but the hunter's own qualifies, so a
+round opens at 1 in 19. When the round is over there is nothing left to aim at and the odds
+come off the bars.
