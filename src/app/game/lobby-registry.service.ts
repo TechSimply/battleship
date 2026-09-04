@@ -125,11 +125,11 @@ export interface SessionRecord {
  * Rule 9.2 link lifetimes once nobody is present. A link that never found a
  * second player is a share that went nowhere, and its number is worth
  * recycling; a game that has two players in it is worth keeping through a
- * phone call, a commute or a night's sleep, because the board now lives here
+ * phone call, a commute or an evening out, because the board now lives here
  * and both of them can come back to it exactly as they left it.
  */
 const STALE_UNOCCUPIED_MS = 10 * 60_000; // never paired: 10 minutes
-const STALE_OCCUPIED_MS = 24 * 60 * 60_000; // paired at least once: a day
+const STALE_OCCUPIED_MS = 3 * 60 * 60_000; // paired at least once: 3 hours
 /** A presence heartbeat lands this often… */
 const HEARTBEAT_MS = 20_000;
 /** …and a party counts as "present" until this long after its last beat. */

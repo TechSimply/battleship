@@ -54,7 +54,7 @@ const CLIENT_KEY = 'battleship.clientId';
  * Ignore a remembered session older than the longest life rule 9.2 gives a
  * link. Beyond that the record is gone and there is nothing to return to.
  */
-const SESSION_TTL_MS = 24 * 60 * 60_000;
+const SESSION_TTL_MS = 3 * 60 * 60_000;
 /** How often a player waiting on the lobby screen re-reads the link. */
 const RECHECK_MS = 15_000;
 

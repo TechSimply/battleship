@@ -25,12 +25,12 @@ describe('parseSession (coming back to the game you were in)', () => {
     expect(parseSession(stored(1553, 10_000), now)).toBe(1553);
   });
 
-  it('returns to one left hours ago — the board is still on the server', () => {
-    expect(parseSession(stored(1553, 8 * 60 * 60_000), now)).toBe(1553);
+  it('returns to one left a couple of hours ago — the board is on the server', () => {
+    expect(parseSession(stored(1553, 2 * 60 * 60_000), now)).toBe(1553);
   });
 
   it('lets go of one older than any link can be (rule 9.2)', () => {
-    expect(parseSession(stored(1553, 25 * 60 * 60_000), now)).toBeNull();
+    expect(parseSession(stored(1553, 4 * 60 * 60_000), now)).toBeNull();
   });
 
   it('ignores nothing stored, and anything that is not ours', () => {

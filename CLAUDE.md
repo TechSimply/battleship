@@ -85,7 +85,7 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   for rule 9 **and the multiplayer transport** (project `battleship-p2p`, europe-west1; rules
   in `database.rules.json`). One `/sessions/{n}` record per game: `claim()` reserves a number
   atomically, presence heartbeats keep it alive, `isSessionAlive()` applies the rule 9.2 TTLs
-  (10 min never-paired / 24 h once paired, measured from the newest heartbeat), `terminate()`
+  (10 min never-paired / 3 h once paired, measured from the newest heartbeat), `terminate()`
   deletes the record on Leave so the number is reusable, and `reclaimSeat()` gives a returning
   device the seat its `clientId` holds. Under `moves` is an append-only log of every action:
   `sendMove()` pushes one, `watchMoves()` replays the whole log and then follows it, and

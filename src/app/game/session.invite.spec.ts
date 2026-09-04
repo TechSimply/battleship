@@ -366,6 +366,35 @@ describe('a game that lives on the server', () => {
     expect(p1.session.state()).toBe('lobby');
   });
 
+  it('rebuilds craters, health and score from the log alone', async () => {
+    // The question this design turns on: nothing but the moves is stored, so
+    // everything a returning player needs has to fall out of replaying them.
+    const id = await hostAGame();
+    await as(p2, () => p2.session.join(id));
+    await as(p1, () => p1.session.act({ x: 0, y: 0 }));
+    await as(p2, () => p2.session.act({ x: 3, y: 4 }));
+    await as(p1, () => p1.session.act({ x: 3, y: 4 })); // a hit: player 2 to 50%
+    await as(p1, () => p1.session.act({ x: 0, y: 1 })); // and the move it costs
+
+    expect(p1.game.players()[1].health).toBeLessThan(100);
+    const snapshot = (g: GameService) => ({
+      players: g.players(),
+      destroyed: g.destroyed(),
+      hitSquares: g.hitSquares(),
+      phase: g.phase(),
+      turn: g.currentPlayer(),
+      scores: g.scores(),
+    });
+    const truth = JSON.stringify(snapshot(p1.game));
+
+    p2 = await relaunch(p2); // player 2's app is killed mid-game
+    await as(p2, () => p2.session.resumeSession());
+
+    // Not just "a board" — the same board, down to the burning hull and the
+    // craters, with no field of it ever having been written to the database.
+    expect(JSON.stringify(snapshot(p2.game))).toBe(truth);
+  });
+
   it('applies each move once, however it arrives', async () => {
     const id = await hostAGame();
     await as(p2, () => p2.session.join(id));

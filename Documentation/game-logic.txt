@@ -57,7 +57,7 @@ and player2 chooses "Join the game" and inputs the game id (e.x. Battle1)
 if player goes on teh link he doesn't need to enter gameid
 9.2.
 stale_nonoccupied_link_live_time=10minutes
-stale_occupied_link_live_time=24hours
+stale_occupied_link_live_time=3hours
 The link invite should be a live no matter if the link generator closes the application of if nobody visitis this link
 for amount of stale_nonoccupied_link_live_time but if one player is on the link than it will be stale_occupied_link_live_time.
 Link generator is player1 the other player is player2

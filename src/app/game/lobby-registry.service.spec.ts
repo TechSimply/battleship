@@ -34,20 +34,20 @@ describe('isSessionAlive (rule 9 link liveness)', () => {
     expect(isSessionAlive(stillFresh, now)).toBe(true);
   });
 
-  it('a game with two players in it survives a night away', () => {
+  it('a game with two players in it survives an evening away', () => {
     // Both parties gone (timestamps stale), but the board is on the server and
     // either of them can come back to it — so the link has to still be there.
-    const overnight = rec({
-      createdAt: now - 20 * 60 * MIN,
-      hostAt: now - 8 * 60 * MIN,
-      joinerAt: now - 8 * 60 * MIN,
+    const evening = rec({
+      createdAt: now - 5 * 60 * MIN,
+      hostAt: now - 2 * 60 * MIN,
+      joinerAt: now - 2 * 60 * MIN,
       joined: true,
     });
-    expect(isSessionAlive(overnight, now)).toBe(true);
+    expect(isSessionAlive(evening, now)).toBe(true);
     const expired = rec({
-      createdAt: now - 30 * 60 * MIN,
-      hostAt: now - 25 * 60 * MIN,
-      joinerAt: now - 25 * 60 * MIN,
+      createdAt: now - 8 * 60 * MIN,
+      hostAt: now - 4 * 60 * MIN,
+      joinerAt: now - 4 * 60 * MIN,
       joined: true,
     });
     expect(isSessionAlive(expired, now)).toBe(false);
@@ -64,10 +64,10 @@ describe('isSessionAlive (rule 9 link liveness)', () => {
  */
 describe('a closed game stays reclaimable for its TTL', () => {
   it('is still alive right after both players leave a long game', () => {
-    // Created a day and a half ago, actively played until ~10s ago, then both
-    // closed the app.
+    // Created hours ago, actively played until ~10s ago, then both closed
+    // the app.
     const justLeft = rec({
-      createdAt: now - 36 * 60 * MIN,
+      createdAt: now - 5 * 60 * MIN,
       hostAt: now - 10_000,
       joinerAt: now - 10_000,
       joined: true,
@@ -78,7 +78,7 @@ describe('a closed game stays reclaimable for its TTL', () => {
     // the session by but createdAt, so a game played all afternoon reads as
     // long dead the moment both players close the app.
     const nulled = rec({
-      createdAt: now - 36 * 60 * MIN,
+      createdAt: now - 5 * 60 * MIN,
       hostAt: null,
       joinerAt: null,
       joined: true,
@@ -88,9 +88,9 @@ describe('a closed game stays reclaimable for its TTL', () => {
 
   it('still expires once the TTL passes with nobody back', () => {
     const abandoned = rec({
-      createdAt: now - 40 * 60 * MIN,
-      hostAt: now - 26 * 60 * MIN,
-      joinerAt: now - 26 * 60 * MIN,
+      createdAt: now - 9 * 60 * MIN,
+      hostAt: now - 4 * 60 * MIN,
+      joinerAt: now - 4 * 60 * MIN,
       joined: true,
     });
     expect(isSessionAlive(abandoned, now)).toBe(false);
