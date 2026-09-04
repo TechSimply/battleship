@@ -297,10 +297,11 @@ export class Game {
 
   /** True while the board is waiting for this player to tap it. */
   protected readonly boardActive = computed(() => {
-    if (this.session.state() !== 'playing') return false;
+    // A tap already in flight owns the turn until the database answers it.
+    if (this.session.state() !== 'playing' || this.session.busy()) return false;
     switch (this.game.phase()) {
       case 'placement':
-        return !this.game.players()[this.session.myPlayer()].ship;
+        return !this.game.players()[this.session.myPlayer()].placed;
       case 'fire':
       case 'move':
         return this.myTurn();
@@ -311,12 +312,17 @@ export class Game {
 
   protected readonly message = computed(() => {
     const me = this.session.myPlayer();
+    // The database refused a move: one of the two devices is not playing by
+    // the rules, and a board that has quietly stopped answering is worse than
+    // being told so.
+    const problem = this.session.problem();
+    if (problem) return problem;
     // Firebase presence notices a closed app a moment before the data channel
     // does, so say so rather than leaving the player staring at a dead board.
     if (this.opponentAway()) return 'Opponent left the game';
     switch (this.game.phase()) {
       case 'placement':
-        return this.game.players()[me].ship
+        return this.game.players()[me].placed
           ? 'Waiting for your opponent to place their ship…'
           : 'Tap a square to place your ship';
       case 'fire':
@@ -351,7 +357,9 @@ export class Game {
   });
 
   protected onCellClick(cell: CellVM): void {
-    this.session.act({ x: cell.x, y: cell.y });
+    // Online a tap is a round trip now (commit the square, then ask the
+    // database what it found there), so it is answered rather than awaited.
+    void this.session.act({ x: cell.x, y: cell.y });
   }
 
   private buildGauge(id: PlayerId, mine: boolean): GaugeVM {

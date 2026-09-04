@@ -47,18 +47,27 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 
 ## Architecture
 
-- `src/app/game/game.service.ts` — pure rules engine. State in signals; every mutation is a
-  serializable `GameAction` (`place` / `fire` / `move` / `reset`). `apply()` runs an action
-  (local or received); `tryLocal(actor, coord)` validates a tap on the one board and returns
-  the action to mirror. Craters live in a single shared `destroyed` signal (rule 2.3), not per
+- `src/app/game/game.service.ts` — pure rules engine, and now a *partially observable* one:
+  it knows this device's own ship and only what the enemy has actually given away. State in
+  signals; every mutation is a serializable `GameAction` (`place` / `fire` / `move` / `stay` /
+  `reveal` / `reset`). `apply()` runs an action (played here, or read off the log);
+  `intent(actor, coord)` says what a tap would mean, checked against what this device knows
+  for certain. A `place`/`move` carries a square only when this device is entitled to it —
+  its own, or a ram; `hit` and `ram` are answers the database supplies, because no client is
+  allowed to work them out. `PlayerState.placed` (their ship is out there somewhere) is
+  therefore not the same question as `ship !== null` (we can see it), and `epoch` counts a
+  ship's positions so a shot can name the one it was aimed at. `stay` is rule 5.4's boxed-in
+  shooter, explicit now because no device can tell whether the *enemy* had anywhere to sail. Craters live in a single shared `destroyed` signal (rule 2.3), not per
   player; `rammed()` is the draw (`phase === 'gameover'` with `winner() === null`). Because
   both devices apply the same actions deterministically, derived state (exposure, bombed
   squares, scores) stays in sync with no extra messages. `reset()` = round reset (keeps score);
   `resetScores()` = new session.
 - `src/app/game/session.service.ts` — the lobby state machine and this device's seat.
   `newGame()` claims a random free number, `join()` takes the empty seat on a link,
-  `resumeSession()` walks back into the game this device was in, `act()` applies a tap
-  locally and appends it to the log. `parseGameId()` accepts `Battle3` / `battle 3` / `3`.
+  `resumeSession()` walks back into the game this device was in, `act()` plays a tap
+  (two writes: commit the square, then log it with the database's answer) and is asynchronous
+  for that reason — `busy()` holds the board while one is in flight, and `problem()` says so
+  when the database refuses one. `parseGameId()` accepts `Battle3` / `battle 3` / `3`.
   **There is nobody to find any more.** Player 2 does not dial player 1 and does not wait
   for them to be awake: the seat is a field on a database record, so they are in the game
   immediately and can place their ship while player 1 is still in the messaging app they
@@ -75,12 +84,13 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   is on the server, so `app.ts` calls `resumeSession()` on any load without `?join=` and the
   player lands back on their own board mid-game. Only the Leave button ends a game — it
   terminates the link for both players (`state === 'disconnected'` on the other side).
-  **Applying a move exactly once.** The acting device applies its tap immediately, so the
-  board responds under the finger, then writes it; every device (the writer included) also
-  sees it arrive off `onChildAdded`. `ownMoves` holds the keys this device wrote — `push()`
-  hands the key back before the write lands — so its own echo is dropped once and only once.
-  A replay after a relaunch starts with an empty set, so on that path the *same* moves are
-  applied, which is exactly what rebuilding the board means.
+  **Applying a move exactly once.** The acting device applies its own action as soon as the
+  database has answered it, and drops the echo that comes back off `onChildAdded`; it claims
+  the key *before* writing, because Firebase shows a device its own writes long before the
+  server has agreed to them — including a guess that is about to be rejected. A replay after
+  a relaunch starts with an empty set, so on that path the *same* entries are applied, which
+  is exactly what rebuilding the board means. This device's own squares are not in the log,
+  so a replay reads them back out of the secret (`ownShips`) before it starts.
 - `src/app/game/lobby-registry.service.ts` — Firebase Realtime Database: session bookkeeping
   for rule 9 **and the multiplayer transport** (project `battleship-p2p`, europe-west1; rules
   in `database.rules.json`). One `/sessions/{n}` record per game: `claim()` reserves a number
@@ -106,10 +116,18 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   a cold page load and aborts without ever reaching the server.
   **Rules are not deployed by the Pages workflow.** `database.rules.json` is deployed by
   `firebase-hosting-merge.yml` (before hosting, so a failure leaves the working build up) or by
-  hand with `firebase deploy --only database`. A client that writes `moves` against rules that
-  do not know about them is a game that cannot be played, so rules go out first. Test them for
-  real with `npx firebase-tools emulators:start --only database` — it catches both rejected
-  writes and rules that do not parse (the file takes no comment keys, unlike `firebase.json`).
+  hand with `firebase deploy --only database`. A client that writes against rules that do not
+  know about it is a game that cannot be played, so rules go out first — and the Pages workflow
+  runs independently of that one, so on a change touching both, watch the rules deploy land
+  before the app does. `npm run test:rules` catches both rejected writes and rules that do not
+  parse (the file takes no comment keys, unlike `firebase.json`).
+  **The rules are generated.** Edit [`tools/rules.mjs`](tools/rules.mjs) and run `npm run rules`
+  — never `database.rules.json` by hand. The expressions are far too long to write as JSON (the
+  boxed-in test alone is eight bordering squares), and the file cannot carry a comment saying
+  what any of them mean.
+  **Anonymous auth is a hard dependency.** Every read and write needs a signed-in account now,
+  so *Authentication → Sign-in method → Anonymous* must stay enabled in the Firebase console.
+  With it off there is no lobby and no game.
 - `src/app/lobby/` — the New Game / Join The Game lobby (mobile-first). The host can copy an
   invite link (`…/?join={n}`, built from `document.baseURI`) that `app.ts` auto-joins on load,
   or share just the number for manual entry (digits-only field with a fixed "Battle" prefix).
@@ -180,10 +198,54 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/app.ts` — swaps between lobby and game based on session state.
 - Host = player 0 and fires first. Placement is simultaneous.
 
+## Anti-cheat: where the ships live
+
+Both boards used to hold both ships, so the enemy's square was one console command away, and
+every rule the game turns on — a hit, a legal step, a ram — was whatever a client said it was.
+It isn't any more. **A ship's position never travels over the wire.** It is written to
+`/secrets/{n}/{round}/{seat}/{epoch}`, which `database.rules.json` lets only that seat's own
+device read, and the database is the only party that ever sees both of them.
+
+Everything a client would otherwise be trusted with is checked there, against data it cannot
+read:
+
+- **a position is write-once**, must border the one before it and may not be a crater — so no
+  teleporting, and no dodging a shot that has already been fired at the epoch you were in;
+- **`hit` and `ram` are validated** against the enemy's committed square, so neither can be
+  claimed nor denied;
+- **a shot is fired from the square the shooter is really on** (rule 5.2), and never at the
+  square under its own keel;
+- **a `stay`** (rule 5.4 with nowhere to go) is only accepted from a ship that is genuinely
+  boxed in — otherwise standing still while the log says you sailed would quietly break the
+  deduction in `possibleShipSquares()` that the whole game is played on;
+- **a seat is an anonymous auth uid**, so only your device can play your moves: no firing on
+  your opponent's behalf, and no ramming yourself to a draw in their name.
+
+Two things follow, and both are load-bearing:
+
+**Every action is two writes.** A rejected write is itself a signal, so nothing may be
+learnable from one until the action is spent: the move commits first (the new position, or the
+crater record for a shot) and only then is the entry logged with the answer. The client simply
+*guesses* that answer — `false`, then `true` — because by then the shot or the move has already
+happened, and the guess reveals nothing it was not about to reveal anyway. Fold the two writes
+back into one and the validation becomes an oracle a cheater can sweep the board with.
+
+**A move is a round trip.** `act()` is asynchronous, the board is held (`busy()`) while a tap
+is in flight, and if either write is refused the status pill says so (`problem()`). If a
+connection dies between the two writes, the next attempt finds the epoch already committed and
+carries on from the square that actually landed — otherwise the round would be stuck forever.
+
+What this does **not** do: it cannot stop a player from reading their own board, and the
+computer opponent is all on one device by definition, so `'bot'` mode settles its own hits and
+rams locally. And the guarantee is about what the *other* device will accept — a cheat that
+only fools the cheater is not worth spending a rule on.
+
 ## Commands
 
 ```bash
 npm test                                   # vitest unit tests
+npm run rules                              # regenerate database.rules.json from tools/rules.mjs
+npm run test:rules                         # …and check it against the database emulator (needs Java)
 npx ng build --configuration production    # prod build
 npx ng serve --port 4200                   # dev server
 ```
@@ -201,16 +263,16 @@ relaunching mid-game and getting their board back, a stranger being turned away,
 ending it for both. Assert a move *crossing* — two devices looking at unrelated boards both
 say "playing" too.
 
-For anything touching the database, run the real thing:
-
-```bash
-npx firebase-tools@13 emulators:start --only database --project battleship-p2p   # needs Java
-```
-
-It loads `database.rules.json` and enforces it, so both halves get checked: that every write
-the client makes is accepted, and that malformed ones are not. It also reports rules that fail
-to *parse* — that is how the "no comment keys in a rules file" trap gets caught before a deploy.
-Drive it over REST (`http://127.0.0.1:9000/sessions/1234.json?ns=battleship-p2p-default-rtdb`).
+The anti-cheat is asserted in exactly one place, and it is not in the app: **`npm run
+test:rules`** boots the database emulator on the real `database.rules.json` and drives it over
+REST as three signed-in devices — the two seats and a stranger — checking that a player cannot
+read the other ship, teleport, dodge, lie about a hit or a ram, fire from somewhere it isn't,
+claim to be boxed in, or write a move in the other seat's name. The client tests can only show
+that the app plays by the rules; these are what show the database *makes* it. They also check
+that every write the client actually makes is accepted (including `update()` calls, where the
+rules see the merged node), and that the file parses at all — that is how the "no comment keys
+in a rules file" trap gets caught before a deploy. Add a case here for anything that touches
+`tools/rules.mjs`.
 
 The two-device flow is verified end-to-end by driving two isolated browser contexts with
 **Playwright** against `ng serve` with `databaseURL` pointed at that emulator (remember to put
@@ -235,8 +297,15 @@ board" were confirmed, and it catches integration bugs the fakes cannot.
 **Spectating and history.** The move log makes both nearly free — a third subscriber could
 watch a game, and a finished one could be stepped through.
 
-**Pruning.** Nothing deletes an abandoned record before its TTL, and `moves` grows for the life
-of a session. Both are tiny, but a scheduled cleanup (or `onDisconnect` housekeeping) would
-keep the free tier comfortable if the game gets busy.
+**Pruning.** Nothing deletes an abandoned record before its TTL, `moves` grows for the life of
+a session, and `/secrets/{n}` outlives the game it belonged to (a Leave deletes the record but
+cannot delete the secret, which is why a round's namespace carries the session's `createdAt` —
+a recycled number never lands on the last game's positions). All tiny, but a scheduled cleanup
+(or `onDisconnect` housekeeping) would keep the free tier comfortable if the game gets busy.
+
+**A rematch is still a client's word.** `reset` is the one entry the rules do not check, so a
+player who is losing can force the next round rather than lose the point. Settling it would
+mean teaching the rules the whole health ladder; a cheaper fix is to let the log record who
+asked and let the other player see it.
 
 Random first player, real-world two-phone connection test, further PWA polish.
