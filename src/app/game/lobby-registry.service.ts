@@ -1,7 +1,9 @@
 import { Injectable } from '@angular/core';
-import { initializeApp } from 'firebase/app';
+import { FirebaseApp, initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import {
   Database,
+  child,
   get,
   getDatabase,
   increment,
@@ -16,32 +18,39 @@ import {
   update,
 } from 'firebase/database';
 import { firebaseConfig } from '../../environments/environment';
-import { BOARD_H, BOARD_W, GameAction, PlayerId } from './game.service';
+import { BOARD_H, BOARD_W, Coord, GameAction, PlayerId } from './game.service';
 
 /**
- * Rule 9 (durable invite links) — and, since the game moved off WebRTC, the
- * whole of the multiplayer transport.
+ * Rule 9 (durable invite links), the multiplayer transport — and, since ship
+ * positions stopped travelling over it, the referee.
  *
  * A Firebase Realtime Database record per Battle{n} holds who is present
  * (heartbeat timestamps) and, under `moves`, an append-only log of every action
- * played. Both devices replay that log into the same deterministic rules engine
+ * played. Both devices replay that log into the same rules engine
  * (`GameService`), so the database orders the moves and the two boards cannot
- * drift: there is nothing for them to disagree about.
+ * drift.
  *
- * That is a deliberate step back from peer-to-peer. Gameplay used to run over a
- * WebRTC data channel brokered by the free PeerJS cloud, which has three
- * separate ways to fail on a phone — the broker forgets a backgrounded host's
- * id, its offer queue answers late enough to race the joiner's own retries, and
- * ICE simply cannot always cross a carrier NAT, where the fallback is a free
- * shared TURN relay on a single UDP port. Every one of those shows up as two
- * players staring at screens that never change. This is one WebSocket to
- * Google on 443, which is the same connection that was already claiming the
- * game number successfully on those very phones.
+ * What the database keeps to itself is the important part. A ship's square is
+ * written to `/secrets/{n}/{round}/{seat}/{epoch}`, which the rules let only
+ * that seat's device read — the opponent's app is never told where the ship is,
+ * so there is nothing in it to find with the console open. Everything a client
+ * would otherwise be trusted to compute from both positions is instead checked
+ * by `database.rules.json` against data it cannot read:
  *
- * What it buys beyond reliability: the board outlives both browsers, so a
- * player who closes the app, runs out of battery or walks into a tunnel comes
- * back to the game exactly as they left it (`reclaimSeat` + a log replay), and
- * the link is as durable as rule 9.2's window.
+ *  - a position is written once, must border the one before it, and may not be
+ *    a crater, so a ship can neither teleport nor dodge a shot after the fact;
+ *  - `hit` and `ram` are validated against the enemy's committed square, so
+ *    neither can be claimed or denied;
+ *  - a shot is fired from the square the shooter is really on (rule 5.2);
+ *  - only the device holding a seat can play that seat's moves.
+ *
+ * Every action is therefore two writes: one that *commits* it (the new position
+ * for a move, the crater record for a shot) and one that logs it with the
+ * answer. That order matters — a rejected write is itself a signal, so the
+ * commitment has to land before anything can be learned from a rejection. On
+ * the answer itself the client simply guesses (`false`, then `true`): by then
+ * the shot or the move is already spent, so the guess reveals nothing the
+ * action was not about to reveal anyway.
  *
  * Firebase is initialised lazily (first real use) so merely constructing the
  * app — e.g. in unit tests — never opens a socket.
@@ -57,43 +66,100 @@ export type SessionRole = 'host' | 'joiner';
 export interface Seat {
   role: SessionRole;
   joined: boolean;
+  /** Server clock at the claim: the first half of every round id (see below). */
+  createdAt: number;
 }
 
 /**
- * One move on the wire. Short keys because every move is a separate record:
- * `p` player, `k` kind, `x`/`y` the square (absent on a round reset).
+ * One entry of the log. Short keys because every entry is a separate record.
+ * `p` player, `k` kind, `r` round, `e` that ship's epoch, `te`/`oe` the epoch
+ * the enemy was living in when it was shot at / sailed into, `x`/`y` the bombed
+ * square (or a revealed one), `fx`/`fy` the square it was fired from, and the
+ * two answers the database settles, `hit` and `ram`.
+ *
+ * There is deliberately no square on a `place` or a `move`: that is the whole
+ * point — where a ship went is between its owner and the database.
  */
 export interface WireMove {
   p: number;
   k: string;
+  r: string;
+  e?: number;
+  te?: number;
+  oe?: number;
   x?: number;
   y?: number;
+  fx?: number;
+  fy?: number;
+  hit?: boolean;
+  ram?: boolean;
 }
+
+const isCoord = (x: unknown, y: unknown): boolean =>
+  Number.isInteger(x) &&
+  Number.isInteger(y) &&
+  (x as number) >= 0 &&
+  (x as number) < BOARD_W &&
+  (y as number) >= 0 &&
+  (y as number) < BOARD_H;
 
 /**
- * Rebuild an action from a stored move, or null if it is not one. Anything can
- * write to a session (the database has no accounts — the game number is the
- * only secret), so the log is parsed defensively rather than trusted: a
- * malformed record is skipped, not applied.
+ * Rebuild an action from a stored entry, or null if it is not one. `own` hands
+ * back this device's own ship position for one of its own entries — the log
+ * does not carry it, and on a replay after a relaunch it comes from the
+ * secret the database has been keeping for us. For the opponent's entries it
+ * returns null, which is exactly the point: their square is not ours to know.
  */
-export function toAction(raw: unknown): GameAction | null {
+export function toAction(
+  raw: unknown,
+  own: (p: PlayerId, epoch: number) => Coord | null,
+): GameAction | null {
   const m = raw as WireMove | null;
-  if (!m || typeof m.k !== 'string') return null;
+  if (!m || typeof m.k !== 'string' || typeof m.r !== 'string') return null;
   if (m.k === 'reset') return { kind: 'reset' };
-  if (m.k !== 'place' && m.k !== 'fire' && m.k !== 'move') return null;
   if (m.p !== 0 && m.p !== 1) return null;
-  const { x, y } = m;
-  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
-  if (x! < 0 || x! >= BOARD_W || y! < 0 || y! >= BOARD_H) return null;
-  return { kind: m.k, player: m.p as PlayerId, c: { x: x!, y: y! } };
+  const player = m.p as PlayerId;
+  const epoch = m.e;
+  if (!Number.isInteger(epoch) || (epoch as number) < 0) return null;
+  const at = isCoord(m.x, m.y) ? { x: m.x!, y: m.y! } : null;
+
+  switch (m.k) {
+    case 'place':
+    case 'move': {
+      if (typeof m.ram !== 'boolean') return null;
+      // A ram is the one move that comes with its square: both wrecks have to
+      // be drawn on it (rule 11.3).
+      if (m.ram && !at) return null;
+      const c = m.ram ? at : own(player, epoch as number);
+      return m.k === 'place'
+        ? { kind: 'place', player, c, ram: m.ram }
+        : { kind: 'move', player, c, ram: m.ram };
+    }
+    case 'fire':
+      if (typeof m.hit !== 'boolean' || !at || !isCoord(m.fx, m.fy)) return null;
+      return { kind: 'fire', player, from: { x: m.fx!, y: m.fy! }, to: at, hit: m.hit };
+    case 'stay':
+      return { kind: 'stay', player };
+    case 'reveal':
+      return at ? { kind: 'reveal', player, c: at } : null;
+    default:
+      return null;
+  }
 }
 
-/** The same action on its way out. */
-export function toWire(action: GameAction): WireMove {
-  return action.kind === 'reset'
-    ? { p: 0, k: 'reset' }
-    : { p: action.player, k: action.kind, x: action.c.x, y: action.c.y };
-}
+/** The round an entry belongs to; entries from any other round are ignored. */
+export const roundOf = (raw: unknown): string | null => {
+  const r = (raw as WireMove | null)?.r;
+  return typeof r === 'string' ? r : null;
+};
+
+/**
+ * A round's namespace for the secret positions: the session's own creation
+ * time, so a recycled game number never lands on the last game's leftovers,
+ * and the push key of the `reset` that opened the round ("0" for the first),
+ * so a rematch starts clean without a counter for two devices to race over.
+ */
+export const roundId = (createdAt: number, resetKey = '0'): string => `${createdAt}_${resetKey}`;
 
 /**
  * One `/sessions/{n}` record. `*At` are server-ms of each party's last
@@ -111,11 +177,11 @@ export interface SessionRecord {
   /** A deliberate Leave killed the link permanently (rule 9, leave-btn). */
   terminated: boolean;
   /**
-   * Which device holds each seat. Rule 9 says a returning player is still the
-   * player number they were, and this is what settles it: the *record* decides
-   * the seat, so a reopened app takes back the one it had rather than trusting
-   * its own memory — and a stranger who guesses the number cannot walk into a
-   * seat that is already someone's.
+   * Which device holds each seat — an anonymous Firebase auth uid, taken once
+   * and never reassigned. Rule 9 says a returning player is still the player
+   * number they were, and this is what settles it; it is also what the database
+   * rules mean by "the player whose ship this is", so a seat is now the thing
+   * that authorises every move made in its name.
    */
   hostId?: string;
   joinerId?: string;
@@ -162,9 +228,8 @@ export function isSessionAlive(rec: SessionRecord | null, now: number): boolean 
 
 /**
  * Is one specific party (host or joiner) currently on the link? True only while
- * their heartbeat is fresh; a Leave/terminate or a dropped app (onDisconnect
- * nulls their slot) both read as absent. This is what tells the other player
- * "your opponent closed the app" without waiting out the reconnect grace.
+ * their heartbeat is fresh; a Leave/terminate or a dropped app both read as
+ * absent. This is what tells the other player "your opponent closed the app".
  */
 export function isPartyPresent(
   rec: SessionRecord | null,
@@ -176,18 +241,25 @@ export function isPartyPresent(
   return !!ts && now - ts < PRESENCE_TTL_MS;
 }
 
+/** Rule 7: the host is player 0 and fires first; the joiner is player 1. */
+export const seatNo = (role: SessionRole): PlayerId => (role === 'host' ? 0 : 1);
+
 @Injectable({ providedIn: 'root' })
 export class LobbyRegistryService {
+  private _app: FirebaseApp | null = null;
   private _db: Database | null = null;
+  private _uid: Promise<string> | null = null;
   private serverOffset = 0;
 
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
-  private presenceN: number | null = null;
-  private presenceRole: SessionRole | null = null;
+
+  private app(): FirebaseApp {
+    return (this._app ??= initializeApp(firebaseConfig));
+  }
 
   private db(): Database {
     if (!this._db) {
-      this._db = getDatabase(initializeApp(firebaseConfig));
+      this._db = getDatabase(this.app());
       // RTDB tells us how far our clock is from the server's; all staleness
       // maths runs on server time so a skewed device can't misjudge a TTL.
       onValue(ref(this._db, '.info/serverTimeOffset'), (snap) => {
@@ -195,6 +267,19 @@ export class LobbyRegistryService {
       });
     }
     return this._db;
+  }
+
+  /**
+   * This device's identity, and now its authority: an anonymous Firebase
+   * account. It is what holds a seat (rule 9) *and* what the database rules
+   * check before accepting a move played in that seat's name, so a stranger —
+   * or the other player — cannot act for you. Firebase keeps the same account
+   * across relaunches, which is what lets a reopened app walk back into its own
+   * game; where storage is blocked (private mode) it is a fresh account each
+   * run, and the seat is only ours for as long as the app stays open.
+   */
+  uid(): Promise<string> {
+    return (this._uid ??= signInAnonymously(getAuth(this.app())).then((cred) => cred.user.uid));
   }
 
   private now(): number {
@@ -209,17 +294,40 @@ export class LobbyRegistryService {
   private sessionRef(n: number) {
     return ref(this.db(), `sessions/${n}`);
   }
+  private movesRef(n: number) {
+    return ref(this.db(), `sessions/${n}/moves`);
+  }
+  private craterRef(n: number, round: string, c: Coord) {
+    return ref(this.db(), `sessions/${n}/craters/${round}/${c.x}_${c.y}`);
+  }
+  private shipRef(n: number, round: string, seat: PlayerId, epoch: number) {
+    return ref(this.db(), `secrets/${n}/${round}/${seat}/${epoch}`);
+  }
 
-  /** Live-subscribe to a session record; returns an unsubscribe function. */
+  /**
+   * Live-subscribe to a session record; returns an unsubscribe function. The
+   * subscription waits for this device to be signed in, since without an
+   * account the rules do not let it read anything at all.
+   */
   observe(n: number, cb: (rec: SessionRecord | null) => void): () => void {
-    return onValue(this.sessionRef(n), (snap) => {
-      cb(snap.exists() ? (snap.val() as SessionRecord) : null);
+    let off: (() => void) | null = null;
+    let cancelled = false;
+    void this.uid().then(() => {
+      if (cancelled) return;
+      off = onValue(this.sessionRef(n), (snap) => {
+        cb(snap.exists() ? (snap.val() as SessionRecord) : null);
+      });
     });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
   }
 
   /** Current record, or null if there has never been one. */
   async read(n: number): Promise<SessionRecord | null> {
     try {
+      await this.uid();
       const snap = await get(this.sessionRef(n));
       return snap.exists() ? (snap.val() as SessionRecord) : null;
     } catch {
@@ -235,9 +343,7 @@ export class LobbyRegistryService {
   /**
    * Reserve Battle{n} as the host. Atomic: fails if a live session already
    * holds it (so two hosts can't claim the same number), succeeds if the slot
-   * is free or an expired/abandoned shell we can overwrite. (A leftover
-   * `terminated` tombstone from before links were deleted on leave would have
-   * its write rejected by the rules — the caller just tries another number.)
+   * is free or an expired/abandoned shell we can overwrite.
    */
   async claim(n: number, hostId: string): Promise<boolean> {
     try {
@@ -275,11 +381,11 @@ export class LobbyRegistryService {
    * already in it — the game number is short and public enough that a stranger
    * could otherwise walk into a game in progress.
    */
-  async takeJoinerSeat(n: number, joinerId: string): Promise<boolean> {
+  async takeJoinerSeat(n: number, joinerId: string): Promise<Seat | null> {
     const rec = await this.read(n);
-    if (!isSessionAlive(rec, this.now())) return false;
-    if (rec?.joinerId && rec.joinerId !== joinerId) return false;
-    if (rec?.hostId === joinerId) return false; // that is our own link
+    if (!isSessionAlive(rec, this.now())) return null;
+    if (rec?.joinerId && rec.joinerId !== joinerId) return null;
+    if (rec?.hostId === joinerId) return null; // that is our own link
     try {
       await update(this.sessionRef(n), {
         joinerAt: serverTimestamp(),
@@ -287,51 +393,18 @@ export class LobbyRegistryService {
         joinerId,
       });
     } catch {
-      return false;
+      return null;
     }
     this.bump('gamesStarted');
-    return true;
-  }
-
-  private movesRef(n: number) {
-    return ref(this.db(), `sessions/${n}/moves`);
-  }
-
-  /**
-   * Play a move by appending it to the session's log. The log *is* the game:
-   * both devices replay it into the same deterministic rules engine, so the
-   * database orders the moves and neither device has to agree with the other
-   * about anything else. Returns the key it was written under, so the sender
-   * can recognise its own move coming back.
-   */
-  sendMove(n: number, action: GameAction): string | null {
-    try {
-      const at = push(this.movesRef(n));
-      set(at, toWire(action)).catch(() => {});
-      return at.key;
-    } catch {
-      return null; // Firebase unreachable — the caller keeps its local state
-    }
-  }
-
-  /**
-   * Every move already in the log, oldest first, and then each new one as it
-   * lands. Replaying from the start is what makes a game resumable: a device
-   * that has just opened the app arrives at exactly the board everyone else is
-   * looking at, without anybody having to send it anything.
-   */
-  watchMoves(n: number, cb: (action: GameAction, key: string) => void): () => void {
-    return onChildAdded(this.movesRef(n), (snap) => {
-      const action = toAction(snap.val());
-      if (action && snap.key) cb(action, snap.key);
-    });
+    return { role: 'joiner', joined: true, createdAt: rec!.createdAt };
   }
 
   /**
    * Rule 9: re-take the seat this device already holds — "when they return they
    * should represent respective player number". Works for either seat and, now
    * that the moves live here rather than in the two browsers, for a game
-   * already in progress: the board is rebuilt by replaying the log.
+   * already in progress: the board is rebuilt by replaying the log, and this
+   * device's own ship comes back out of the secret only it can read.
    *
    * Fails (and the caller falls back to the lobby) if the link died, was
    * terminated, is not ours, or Firebase can't be reached — in which case we
@@ -345,40 +418,279 @@ export class LobbyRegistryService {
     // here (only the returning owner reclaims its own seat).
     const rec = await this.read(n);
     const role = this.seatOn(rec, clientId);
-    if (!role) return null;
+    if (!role || !rec) return null;
     try {
       const field = role === 'host' ? 'hostAt' : 'joinerAt';
       await update(this.sessionRef(n), { [field]: serverTimestamp() });
-      return { role, joined: rec?.joined === true };
+      return { role, joined: rec.joined === true, createdAt: rec.createdAt };
     } catch {
       return null;
     }
   }
 
+  // --------------------------------------------------------------- gameplay
+
+  /**
+   * Commit a ship to a square before anything can be learned about it. The
+   * rules check the step against the position before it and against the
+   * craters, and refuse to let it be written twice — so this is the moment the
+   * ship *is* there, as far as the rest of the game is concerned.
+   *
+   * Returns the square that actually ended up committed. Normally that is the
+   * one asked for; if a connection died between this write and the log entry
+   * that belongs with it, the epoch is already spoken for, and the ship is
+   * where it says it is rather than where the player has just tapped. Without
+   * this the second attempt would be refused forever and the round would be
+   * stuck — the one way a two-step move could be worse than a one-step one.
+   */
+  private async commitShip(
+    n: number,
+    round: string,
+    seat: PlayerId,
+    epoch: number,
+    c: Coord,
+  ): Promise<Coord> {
+    await this.uid();
+    const at = this.shipRef(n, round, seat, epoch);
+    try {
+      await set(at, { x: c.x, y: c.y, e: epoch });
+      return c;
+    } catch (err) {
+      const prev = (await get(at)).val() as { x?: number; y?: number } | null;
+      if (prev && isCoord(prev.x, prev.y)) return { x: prev.x!, y: prev.y! };
+      throw err;
+    }
+  }
+
+  /**
+   * The key an entry is about to be written under. Handed out before the write
+   * because Firebase shows a device its own writes the moment they are made,
+   * long before the server has agreed to them: the caller marks the key as its
+   * own first, so a guess that is about to be rejected is never mistaken for
+   * something that happened.
+   */
+  newKey(n: number): string {
+    return push(this.movesRef(n)).key!;
+  }
+
+  /**
+   * Append one entry, guessing the answer the database keeps to itself. The
+   * commitment is already written by the time this runs, so a rejection costs
+   * a round trip and reveals nothing that was not about to be revealed anyway.
+   *
+   * `reveal` is the square that goes in *only* if the answer turns out to be
+   * true — the one both wrecks share after a ram (rule 11.3). It must not ride
+   * along on the ordinary entry: that would put the ship's own square in the
+   * public log and hand away everything these rules exist to keep.
+   */
+  private async logGuess(
+    n: number,
+    key: string,
+    entry: WireMove,
+    field: 'hit' | 'ram',
+    reveal?: Coord,
+  ): Promise<boolean> {
+    await this.uid();
+    const at = child(this.movesRef(n), key);
+    for (const value of [false, true]) {
+      try {
+        await set(at, {
+          ...entry,
+          [field]: value,
+          ...(value && reveal ? { x: reveal.x, y: reveal.y } : {}),
+        });
+        return value;
+      } catch {
+        // wrong guess — or a genuinely bad move, which the second try rejects
+      }
+    }
+    throw new Error(`the database rejected this ${entry.k}`);
+  }
+
+  private async log(n: number, key: string, entry: WireMove): Promise<void> {
+    await this.uid();
+    await set(child(this.movesRef(n), key), entry);
+  }
+
+  /** Rule 4: place, then say so. The square itself stays in the secret. */
+  async place(
+    n: number,
+    round: string,
+    seat: PlayerId,
+    c: Coord,
+    key: string,
+  ): Promise<{ c: Coord; ram: boolean }> {
+    const at = await this.commitShip(n, round, seat, 0, c);
+    const ram = await this.logGuess(n, key, { p: seat, k: 'place', r: round, e: 0 }, 'ram', at);
+    return { c: at, ram };
+  }
+
+  /**
+   * Rule 5: fire. The crater record commits the shot — which square, from which
+   * epoch, at which of the enemy's — and only then does the log entry carry
+   * whether it hit, checked by the rules against a square this device has never
+   * seen.
+   */
+  async fire(
+    n: number,
+    round: string,
+    seat: PlayerId,
+    epoch: number,
+    targetEpoch: number,
+    from: Coord,
+    to: Coord,
+    key: string,
+  ): Promise<boolean> {
+    await this.uid();
+    const shot = { by: seat, e: epoch, te: targetEpoch, x: to.x, y: to.y };
+    try {
+      await set(this.craterRef(n, round, to), shot);
+    } catch (err) {
+      // A square is bombed once. If this is our own shot coming round again
+      // after a dropped connection, all that is left to do is log it.
+      const cur = (await get(this.craterRef(n, round, to))).val() as typeof shot | null;
+      if (!cur || cur.by !== seat || cur.e !== epoch || cur.te !== targetEpoch) throw err;
+    }
+    return this.logGuess(
+      n,
+      key,
+      {
+        p: seat,
+        k: 'fire',
+        r: round,
+        e: epoch,
+        te: targetEpoch,
+        x: to.x,
+        y: to.y,
+        fx: from.x,
+        fy: from.y,
+      },
+      'hit',
+    );
+  }
+
+  /** Rule 5.4: sail one square. Rule 11's answer comes back with it. */
+  async move(
+    n: number,
+    round: string,
+    seat: PlayerId,
+    epoch: number,
+    enemyEpoch: number,
+    c: Coord,
+    key: string,
+  ): Promise<{ c: Coord; ram: boolean }> {
+    const at = await this.commitShip(n, round, seat, epoch, c);
+    const ram = await this.logGuess(
+      n,
+      key,
+      { p: seat, k: 'move', r: round, e: epoch, oe: enemyEpoch },
+      'ram',
+      at,
+    );
+    return { c: at, ram };
+  }
+
+  /** Rule 5.4 with nowhere to go — accepted only from a ship that is boxed in. */
+  stay(n: number, round: string, seat: PlayerId, epoch: number, key: string): Promise<void> {
+    return this.log(n, key, { p: seat, k: 'stay', r: round, e: epoch });
+  }
+
+  /** Show your own square once the round is over, so both wrecks can be drawn. */
+  reveal(
+    n: number,
+    round: string,
+    seat: PlayerId,
+    epoch: number,
+    c: Coord,
+    key: string,
+  ): Promise<void> {
+    return this.log(n, key, { p: seat, k: 'reveal', r: round, e: epoch, x: c.x, y: c.y });
+  }
+
+  /** Rule 8: a rematch. Its key becomes the namespace the next round lives in. */
+  rematch(n: number, round: string, seat: PlayerId, key: string): Promise<void> {
+    return this.log(n, key, { p: seat, k: 'reset', r: round });
+  }
+
+  /** The squares this device's own ship stood on, by epoch, for a replay. */
+  async ownShips(n: number, round: string, seat: PlayerId): Promise<Map<number, Coord>> {
+    const out = new Map<number, Coord>();
+    try {
+      await this.uid();
+      const snap = await get(ref(this.db(), `secrets/${n}/${round}/${seat}`));
+      const val = (snap.val() ?? {}) as Record<string, { x?: number; y?: number }>;
+      for (const [epoch, c] of Object.entries(val)) {
+        if (isCoord(c?.x, c?.y)) out.set(Number(epoch), { x: c.x!, y: c.y! });
+      }
+    } catch {
+      // unreadable (or nothing placed yet) — the caller falls back to the lobby
+    }
+    return out;
+  }
+
+  /**
+   * The log as it stands, oldest first. Replaying it is what makes a game
+   * resumable: a device that has just opened the app arrives at exactly the
+   * board everyone else is looking at. It is fetched rather than streamed
+   * because the log no longer carries this device's own squares — the caller
+   * has to go and get those out of the secret first, one round at a time, since
+   * that is the granularity the rules hand them out at.
+   */
+  async backlog(n: number): Promise<[string, WireMove][]> {
+    await this.uid();
+    const snap = await get(this.movesRef(n));
+    const out: [string, WireMove][] = [];
+    snap.forEach((child) => {
+      if (child.key) out.push([child.key, child.val() as WireMove]);
+    });
+    return out;
+  }
+
+  /**
+   * …and every entry from here on, including our own coming back to us. Keys
+   * already in `seen` are skipped exactly once each, which covers both the
+   * backlog above and this device's own writes, applied the moment they were
+   * played so the board answers under the finger.
+   */
+  follow(n: number, seen: Set<string>, cb: (raw: WireMove, key: string) => void): () => void {
+    let off: (() => void) | null = null;
+    let cancelled = false;
+    void this.uid().then(() => {
+      if (cancelled) return;
+      off = onChildAdded(this.movesRef(n), (child) => {
+        if (!child.key || seen.has(child.key)) return;
+        seen.add(child.key);
+        cb(child.val() as WireMove, child.key);
+      });
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }
+
   /**
    * Bump an aggregate play counter under `/stats`. Deliberately just a number —
    * no ids, no timestamps, nothing per-user — so it needs no cookie banner and
-   * carries no personal data. Session records are deleted on Leave, so without
-   * this there is no lasting trace that anyone ever played. Fire-and-forget:
-   * analytics must never fail a game.
+   * carries no personal data. Fire-and-forget: analytics must never fail a game.
    */
   bump(metric: 'gamesStarted' | 'botGames'): void {
-    try {
-      update(ref(this.db(), 'stats'), { [metric]: increment(1) }).catch(() => {});
-    } catch {
-      // Firebase unreachable — we simply don't count this one
-    }
+    void this.uid()
+      .then(() => update(ref(this.db(), 'stats'), { [metric]: increment(1) }))
+      .catch(() => {});
   }
 
   /**
    * Leave-btn: kill the link (rule 9). We delete the record rather than
    * tombstoning it, so the link is dead for anyone still holding it (a rejoin
-   * finds nothing) while the number is freed for reuse — otherwise every ended
-   * game would permanently burn one of the ~9000 ids.
+   * finds nothing) while the number is freed for reuse. The secrets keep their
+   * own namespace per session, so nothing of this game is left where the next
+   * holder of the number could stumble into it.
    */
   async terminate(n: number): Promise<void> {
     this.stopPresence();
     try {
+      await this.uid();
       await remove(this.sessionRef(n));
     } catch {
       // if we can't reach Firebase the link will simply age out via its TTL
@@ -393,11 +705,11 @@ export class LobbyRegistryService {
    */
   startPresence(n: number, role: SessionRole): void {
     this.stopPresence();
-    this.presenceN = n;
-    this.presenceRole = role;
     const field = role === 'host' ? 'hostAt' : 'joinerAt';
     const beat = () => {
-      update(this.sessionRef(n), { [field]: serverTimestamp() }).catch(() => {});
+      void this.uid()
+        .then(() => update(this.sessionRef(n), { [field]: serverTimestamp() }))
+        .catch(() => {});
     };
     beat();
     this.presenceTimer = setInterval(beat, HEARTBEAT_MS);
@@ -408,7 +720,5 @@ export class LobbyRegistryService {
   stopPresence(): void {
     if (this.presenceTimer) clearInterval(this.presenceTimer);
     this.presenceTimer = null;
-    this.presenceN = null;
-    this.presenceRole = null;
   }
 }
