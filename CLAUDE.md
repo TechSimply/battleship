@@ -275,10 +275,14 @@ in a rules file" trap gets caught before a deploy. Add a case here for anything 
 `tools/rules.mjs`.
 
 The two-device flow is verified end-to-end by driving two isolated browser contexts with
-**Playwright** against `ng serve` with `databaseURL` pointed at that emulator (remember to put
-`environment.ts` back). That is a real game between real browsers over the real SDK and the
-real rules — it is how "player 2 joins while player 1 is away" and "reload mid-game keeps the
-board" were confirmed, and it catches integration bugs the fakes cannot.
+**Playwright** against `ng serve`, with `databaseURL` in `environment.ts` pointed at the
+emulator and `connectAuthEmulator` wired up next to `signInAnonymously` (remember to put both
+back). Start it with `--only database,auth`: the auth emulator only runs because `firebase.json`
+declares it, and without a signed-in account every single write is refused. That is a real game
+between real browsers over the real SDK and the real rules — the only thing that shows the
+writes the client actually makes are the writes the rules accept. It is how "player 2 joins
+while player 1 is away", "a shot is answered by the database" and "reload mid-game keeps the
+board *and* the ship" were confirmed, and it catches integration bugs the fakes cannot.
 
 ## Conventions & gotchas
 
