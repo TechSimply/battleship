@@ -826,6 +826,20 @@ $own-trail-life: 1s;
     animation: hit-reveal 1.1s ease-out 0.3s;
   }
 
+  // Rule 5.2 seen from the other side: the enemy's hull lit by the flash of
+  // its own gun, on the square the rocket is leaving. No delay — this one is
+  // the launch, not the landing — and it burns out where the exposure reticle
+  // takes over. It wears the ship's health colour (rule 6.4) like every other
+  // hull; the gauge has been showing that colour all along.
+  .fire-ghost {
+    position: absolute;
+    z-index: 5;
+    color: var(--ship-color, #{$expose-amber});
+    opacity: 0;
+    filter: drop-shadow(0 0 12px currentColor);
+    animation: fire-reveal 1.1s ease-out;
+  }
+
   // Rule 11: the crash. The two hulls share this one square (rule 11.3), and
   // they get there by sailing into each other along the rammer's own course
   // (`--ram-angle`, set per cell): the rammer drives in, the ship it hit is
@@ -1118,6 +1132,27 @@ $own-trail-life: 1s;
   }
 }
 
+// The muzzle flash: the hull leaps out of the dark as the rocket goes, holds
+// just long enough to be read, and the sea closes over it again.
+@keyframes fire-reveal {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  55% {
+    opacity: 0.95;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
 // Smoke drifting off a hit crater — slow, so it never competes with a flame.
 @keyframes hit-smoke {
   0%,
@@ -1376,6 +1411,7 @@ $own-trail-life: 1s;
   .hit-burst,
   .hit-burst::after,
   .hit-ghost,
+  .fire-ghost,
   .gauge.struck,
   .ram-rammer,
   .ram-victim,
@@ -1391,5 +1427,12 @@ $own-trail-life: 1s;
   .trail::after {
     animation: none;
     transition: none;
+  }
+
+  // Without its animation the reveal would never fade in at all, and rule 5.2's
+  // glimpse of the enemy is information, not decoration: hold the hull steady
+  // instead. game.ts still takes it off the board on its own beat.
+  .fire-ghost {
+    opacity: 1;
   }
 }
