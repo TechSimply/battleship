@@ -188,10 +188,14 @@ export class GameService {
    * the square the *asking* player is standing on, since a ship that had
    * sailed into them would have rammed (rule 11). Used by the computer
    * opponent, and to hint the same deduction to a human.
+   *
+   * That last exclusion is the hunter's own square, which only the hunter
+   * knows — pass `excludeHunter: false` for the count anyone may see (rule
+   * 12.4).
    */
-  possibleShipSquares(player: PlayerId): Coord[] {
+  possibleShipSquares(player: PlayerId, excludeHunter = true): Coord[] {
     const state = this.players()[player];
-    const hunter = this.players()[other(player)].ship;
+    const hunter = excludeHunter ? this.players()[other(player)].ship : null;
     const free = (c: Coord) => !hunter || !sameCell(c, hunter);
 
     if (!state.exposedAt) {
@@ -206,6 +210,27 @@ export class GameService {
     }
     const moved = this.neighborsOf(state.exposedAt).filter(free);
     return moved.length > 0 ? moved : [state.exposedAt];
+  }
+
+  /**
+   * Rule 12: the chance, in percent, that the next shot aimed at `player`
+   * finds them. A shot goes to one square (rule 5.1) and the ship is on one of
+   * the squares `possibleShipSquares()` narrows it down to, so the odds are one
+   * square in that many — 20 squares at the start of the round (rule 12.5),
+   * down to a shot that cannot miss once only one square is left.
+   *
+   * `asHunter` says whether the player being told this is the one holding the
+   * gun. They are, for their own odds: they know their own square, so it is
+   * counted out of the target's squares and the percentage matches the hint the
+   * board highlights for them, square for square. They are not for the odds
+   * shown on the *enemy's* health bar, where counting that one square out would
+   * publish the enemy's position in the percentage (rule 12.4) — so those are
+   * counted from public state alone, which can understate the enemy's gun by a
+   * square. Understating the danger is the safe way round of that trade.
+   */
+  hitChance(player: PlayerId, asHunter: boolean): number {
+    const squares = this.possibleShipSquares(player, asHunter).length;
+    return squares > 0 ? Math.round(100 / squares) : 0;
   }
 
   /** Reset the round for a rematch; the session score is kept (rule 8). */

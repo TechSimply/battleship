@@ -63,6 +63,13 @@ interface GaugeVM {
   ships: number;
   /** This ship was just hit — the gauge takes the blow with it. */
   struck: boolean;
+  /**
+   * Rule 12: the chance this ship's next shot finds its target, in percent.
+   * Null once the round is over — there is nothing left to aim at (rule 12.5).
+   */
+  aim: number | null;
+  /** Rule 12.3: this is the gun currently taking aim — light the bar up. */
+  aiming: boolean;
 }
 
 /**
@@ -289,6 +296,16 @@ export class Game {
   /** Rule 2.3: one united board, seen from this device's point of view. */
   protected readonly cells = computed<CellVM[]>(() => this.buildCells());
 
+  /**
+   * Rule 12: what this device's next shot is worth — one square out of the
+   * ones the enemy could still be on, which is exactly the set the board
+   * highlights while aiming. Counted as the hunter, since you know your own
+   * square (rule 12.4).
+   */
+  protected readonly myAim = computed(() =>
+    this.game.hitChance(this.session.myPlayer() === 0 ? 1 : 0, true),
+  );
+
   /** Rule 10: both healths, side by side above the board. */
   protected readonly gauges = computed<GaugeVM[]>(() => {
     const me = this.session.myPlayer();
@@ -320,7 +337,11 @@ export class Game {
           ? 'Waiting for your opponent to place their ship…'
           : 'Tap a square to place your ship';
       case 'fire':
-        return this.myTurn() ? 'Fire! Tap a square' : 'Enemy is taking aim…';
+        // Rule 12.2: the prompt that asks for the shot says what the shot is
+        // worth, so the odds are in front of the player while they aim.
+        return this.myTurn()
+          ? `Fire! Tap a square — ${this.myAim()}% to hit`
+          : 'Enemy is taking aim…';
       case 'move': {
         const shot = this.game.lastShot();
         if (!this.myTurn()) {
@@ -356,6 +377,7 @@ export class Game {
 
   private buildGauge(id: PlayerId, mine: boolean): GaugeVM {
     const state = this.game.players()[id];
+    const phase = this.game.phase();
     return {
       mine,
       struck: this.impact()?.victim === id,
@@ -363,6 +385,12 @@ export class Game {
       health: state.health,
       color: healthColor(state.health),
       ships: state.shipDestroyed ? 0 : 1,
+      // Rule 12.3: this bar carries the odds of the gun it belongs to, so the
+      // enemy's chance of finding you is read off their bar exactly as yours is
+      // read off your own. `mine` doubles as rule 12.4's "does this player know
+      // where the shooter is standing" — for your own gun, you do.
+      aim: phase === 'gameover' ? null : this.game.hitChance(id === 0 ? 1 : 0, mine),
+      aiming: phase === 'fire' && this.game.currentPlayer() === id,
     };
   }
 

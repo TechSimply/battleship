@@ -315,6 +315,57 @@ describe('GameService', () => {
     expect(candidates).toContainEqual({ x: 2, y: 2 }); // where it actually went
   });
 
+  // --- Shooting odds (rule 12) --------------------------------------------
+
+  it('starts the round at one square in twenty (rule 12.5)', () => {
+    placeBothShips();
+    // 20 squares, less the one the hunter is standing on: 1 in 19 = 5%.
+    expect(game.hitChance(1, true)).toBe(5);
+  });
+
+  it('counts the odds off the same squares the board highlights (rule 12.1)', () => {
+    placeBothShips({ x: 1, y: 1 }, { x: 3, y: 0 });
+    click(1, { x: 2, y: 1 }); // p2 fires at (2,1), miss -> player 0 exposed at (1,1)
+    click(0, { x: 2, y: 2 }); // player 0 moves to (2,2)
+
+    const candidates = game.possibleShipSquares(0);
+    expect(game.hitChance(0, true)).toBe(Math.round(100 / candidates.length));
+  });
+
+  it('cannot miss once one square is left (rule 12.1)', () => {
+    // Corner the ship at (0,0): bomb every neighbour but one, then expose it.
+    placeBothShips({ x: 0, y: 0 }, { x: 3, y: 4 });
+    game.destroyed.update((d) => {
+      const next = [...d];
+      next[1] = true; // (1,0)
+      next[BOARD_W] = true; // (0,1)
+      return next;
+    });
+    game.players.update(([a, b]) => [{ ...a, exposedAt: { x: 0, y: 0 } }, b]);
+
+    // Only (1,1) is left to have sailed to, so the next shot at it is a certainty.
+    expect(game.possibleShipSquares(0)).toEqual([{ x: 1, y: 1 }]);
+    expect(game.hitChance(0, true)).toBe(100);
+  });
+
+  it('leaves the hunter\'s own square in when the odds are not the hunter\'s (rule 12.4)', () => {
+    // Player 0 fires from (1,1) and sails to (2,2); the hunter, player 1, sits
+    // at (0,0) — one of (1,1)'s neighbours, so it is a square player 0 cannot
+    // have gone to, and it counts for the hunter alone.
+    placeBothShips({ x: 1, y: 1 }, { x: 0, y: 0 });
+    click(1, { x: 3, y: 3 }); // player 0 fires, exposing (1,1)
+    click(0, { x: 2, y: 2 }); // and moves
+
+    const asHunter = game.possibleShipSquares(0, true);
+    const public_ = game.possibleShipSquares(0, false);
+    expect(public_).toContainEqual({ x: 0, y: 0 }); // the hunter's own square
+    expect(asHunter).not.toContainEqual({ x: 0, y: 0 });
+    expect(public_).toHaveLength(asHunter.length + 1);
+    // Which is exactly the square of difference between the two percentages.
+    expect(game.hitChance(0, true)).toBe(Math.round(100 / asHunter.length));
+    expect(game.hitChance(0, false)).toBe(Math.round(100 / public_.length));
+  });
+
   it('applies actions received from the opponent identically', () => {
     // What the joiner's device does with the host's mirrored actions.
     game.apply({ kind: 'place', player: 0, c: { x: 0, y: 0 } });

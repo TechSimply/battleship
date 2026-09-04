@@ -32,6 +32,13 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   horizontal gauges above the board, with the little ship icon and the percentage in the
   ship's current colour, plus a **ship counter** (1, or 0 once wrecked) so nobody reads this
   as the classic fleet game. On-screen wording never says "fleet".
+- **Shooting odds (rule 12):** a shot goes to one square, so its chance of hitting is one
+  square out of the ones the enemy could still be on — the same deduction the board already
+  highlights, counted instead of drawn. Both guns' odds are on screen, each on its own ship's
+  health bar, and the bar of whoever is aiming lights up; the fire prompt carries the number
+  too. Your own odds count the hunter's exclusion (your square, which the enemy cannot be on);
+  the enemy's are counted from public state alone, or the missing square would give their
+  position away (rule 12.4).
 - **Sessions (rule 7):** a lobby offers *New Game* / *Join The Game*. New Game claims the
   lowest free `Battle{n}` id; the opponent joins by typing that id.
 - **Scoring (rule 8):** within a session, one victory = one point; score persists across
@@ -50,7 +57,11 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
 - `src/app/game/game.service.ts` — pure rules engine. State in signals; every mutation is a
   serializable `GameAction` (`place` / `fire` / `move` / `reset`). `apply()` runs an action
   (local or received); `tryLocal(actor, coord)` validates a tap on the one board and returns
-  the action to mirror. Craters live in a single shared `destroyed` signal (rule 2.3), not per
+  the action to mirror. `possibleShipSquares(target, excludeHunter?)` is the public deduction of
+  where a ship can still be, and `hitChance(target, asHunter)` is rule 12's percentage over it —
+  `asHunter` picks whether the hunter's own square is counted out, the one square that separates
+  your own odds from the odds you may be shown about the enemy's gun.
+  Craters live in a single shared `destroyed` signal (rule 2.3), not per
   player; `rammed()` is the draw (`phase === 'gameover'` with `winner() === null`). Because
   both devices apply the same actions deterministically, derived state (exposure, bombed
   squares, scores) stays in sync with no extra messages. `reset()` = round reset (keeps score);
@@ -126,7 +137,8 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   the reveal the moment their ship actually moves. Where they sail afterwards (rule 5.4) is
   never drawn; only the exposure reticle stays behind. It is the same one hull element as the
   hit reveal (rule 6.2.1) — a shot's launch square and its target square are never the same. The two gauges sit inside the board panel, above the board, so
-  `fitBoards()` counts them as panel chrome and the board still fits exactly. Health colours live in `healthColor()` (game.ts) and reach
+  `fitBoards()` counts them as panel chrome and the board still fits exactly — the rule 12 odds
+  row under each health tube is part of that chrome, and the fit absorbs it on its own. Health colours live in `healthColor()` (game.ts) and reach
   the CSS as `--ship-color` on the board panel, so gauge, ship icon, counter and the flame on
   the deck are always the same colour. It is a fixed, viewport-sized column
   that never scrolls: one dense top row (game id · score · leave), the status pill,

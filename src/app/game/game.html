@@ -98,6 +98,27 @@
               <span class="gauge-tube">
                 <span class="gauge-fill" [class.empty]="gauge.health === 0" [style.width.%]="gauge.health"></span>
               </span>
+
+              <!-- Rule 12.3: each gun's odds ride on its own ship's bar — yours
+                   on yours, theirs on theirs — so you can read how well they can
+                   see you at the same moment as how well you can see them. It
+                   lights up while that gun is the one taking aim. -->
+              @if (gauge.aim !== null) {
+                <span
+                  [id]="(gauge.mine ? 'my' : 'enemy') + '-aim'"
+                  class="gauge-aim"
+                  [class.aiming]="gauge.aiming"
+                  [attr.aria-label]="(gauge.mine ? 'Your' : 'Enemy') + ' chance to hit'"
+                >
+                  <svg class="aim-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="7" />
+                    <path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" />
+                  </svg>
+                  <span class="aim-label">Hit chance</span>
+                  <span class="aim-value">{{ gauge.aim }}%</span>
+                </span>
+              }
             </div>
           }
         </div>

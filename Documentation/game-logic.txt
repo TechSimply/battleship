@@ -97,3 +97,25 @@ on the last step of their own fire.
 11.5. Placement is simultaneous and hidden, so both players can pick the same starting square.
 That is a ram too - both wrecked, no point, before a single shot. It is not prevented: telling
 the second player "that square is taken" would tell them exactly where the first one is.
+
+12. Shooting odds
+12.1. A shot is aimed at one square, so the chance it finds the enemy is one square out of the
+squares that ship could still be on: 8 squares left for it is a 13% shot, 2 squares is 50%,
+and with only one square left it cannot miss. That is the same deduction the board already
+draws while a player takes aim - firing exposed the enemy's square (rule 5.2) and the forced
+move (rule 5.4) put them on one of its still usable neighbours - counted instead of highlighted.
+12.2. The number is on screen while the player is aiming: the prompt that asks for the shot
+carries it, so a player knows what the shot is worth before taking it.
+12.3. Both odds are shown, each on its own health bar (rule 10): your own gun's chance sits on
+your bar and the enemy gun's chance on theirs, so you can see how well they can see you at the
+same time as how well you can see them. The bar it sits on lights up while that gun is the one
+aiming.
+12.4. The odds must give away nothing the board does not. The hunter's own square is one square
+the hunted ship cannot be on - sailing into it would have rammed it (rule 11) - and a hunter
+knows where they are, so a player's own odds count that square out and match the highlighted
+squares exactly. The enemy's odds are counted from public state alone: the one square of
+difference, read off the percentage on their health bar, would say they are standing next to
+the square you last fired from.
+12.5. Before anybody has fired, every usable square still qualifies, so both sides start the
+round at 1 in 20. When the round is over there is nothing left to aim at and the odds come off
+the bars.
