@@ -315,6 +315,153 @@ describe('GameService', () => {
     expect(candidates).toContainEqual({ x: 2, y: 2 }); // where it actually went
   });
 
+  // --- Shooting odds (rule 12) --------------------------------------------
+
+  it('opens the round at one square in nineteen — case (a) (rules 12.2, 12.9)', () => {
+    placeBothShips();
+    // C = B - D - {h}: 20 squares, nothing bombed, less the hunter's own.
+    expect(game.possibleShipSquares(1)).toHaveLength(BOARD_W * BOARD_H - 1);
+    expect(game.hitChance(1, true)).toBe(5);
+  });
+
+  it('counts the odds off the same squares the board can aim at (rule 12.2)', () => {
+    placeBothShips({ x: 1, y: 1 }, { x: 3, y: 0 });
+    click(1, { x: 2, y: 1 }); // p2 fires at (2,1), miss -> player 0 seen at (1,1)
+    click(0, { x: 2, y: 2 }); // player 0 is forced to move (rule 5.4)
+
+    const candidates = game.possibleShipSquares(0);
+    expect(game.aimSquares(0)).toEqual(candidates); // case (c) is always reachable
+    expect(game.hitChance(0, true)).toBe(Math.round(100 / candidates.length));
+  });
+
+  it('takes the square it fired from off the list once it has moved — case (c) (rule 12.3)', () => {
+    placeBothShips({ x: 1, y: 1 }, { x: 3, y: 3 });
+    click(0, { x: 0, y: 4 }); // player 0 fires from (1,1), miss
+    click(0, { x: 1, y: 2 }); // rule 5.4 forces it off (1,1)
+
+    // It is on one of (1,1)'s usable neighbours and provably not on (1,1).
+    expect(game.possibleShipSquares(0)).not.toContainEqual({ x: 1, y: 1 });
+    expect(game.possibleShipSquares(0)).toContainEqual({ x: 1, y: 2 });
+  });
+
+  it('pins a cornered ship on the square it fired from — case (b) (rules 5.4, 12.3)', () => {
+    // Rule 5.4: with every bordering square already a crater it does not move,
+    // so it is still exactly where it fired from and the next shot cannot miss.
+    placeBothShips({ x: 0, y: 0 }, { x: 3, y: 4 });
+    game.destroyed.update((d) => {
+      const next = [...d];
+      for (const c of [{ x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }]) {
+        next[c.y * BOARD_W + c.x] = true;
+      }
+      return next;
+    });
+
+    game.apply({ kind: 'fire', player: 0, c: { x: 2, y: 2 } });
+    expect(game.phase()).toBe('fire'); // its turn ended without a move
+    expect(game.players()[0].movedSinceSeen).toBe(false);
+    expect(game.possibleShipSquares(0)).toEqual([{ x: 0, y: 0 }]);
+    expect(game.hitChance(0, true)).toBe(100);
+  });
+
+  it('pins a ship where a shell found it, even one that has never fired (rule 6.2.1)', () => {
+    placeBothShips({ x: 0, y: 0 }, { x: 3, y: 3 });
+    game.apply({ kind: 'fire', player: 0, c: { x: 3, y: 3 } }); // a hit
+
+    // Player 1 has fired nothing, so only rule 6.2.1's sighting can pin it —
+    // and it does, exactly: case (b), one square, no guessing.
+    expect(game.players()[1].exposedAt).toBeNull();
+    expect(game.possibleShipSquares(1)).toEqual([{ x: 3, y: 3 }]);
+  });
+
+  it('gives 0 for a ship pinned on a square no shot may be aimed at (rule 12.5)', () => {
+    placeBothShips({ x: 0, y: 0 }, { x: 3, y: 3 });
+    game.apply({ kind: 'fire', player: 0, c: { x: 3, y: 3 } }); // a hit: (3,3) is a crater now
+
+    // Certain — and untouchable, because rule 5.3 closed the only square it
+    // can be on. C and F share nothing, so the shot is worth nothing.
+    expect(game.possibleShipSquares(1)).toEqual([{ x: 3, y: 3 }]);
+    expect(game.aimSquares(1)).toEqual([]);
+    expect(game.hitChance(1, true)).toBe(0);
+  });
+
+  it('keeps 1/|C| rather than 1/|C∩F| when part of C cannot be fired at (rule 12.5)', () => {
+    // The only unreachable candidate is a pinned ship's own crater, which is a
+    // one-square C — so the two readings differ exactly there: 0, not 100.
+    placeBothShips({ x: 0, y: 0 }, { x: 3, y: 3 });
+    game.apply({ kind: 'fire', player: 0, c: { x: 3, y: 3 } });
+    expect(game.hitChance(1, true)).toBe(0);
+    expect(game.aimSquares(1)).toHaveLength(0); // 1/|C∩F| would divide by zero
+  });
+
+  it('re-pins a ship on the newer of its two kinds of sighting (rule 12.2)', () => {
+    placeBothShips({ x: 1, y: 1 }, { x: 3, y: 3 });
+    click(0, { x: 0, y: 4 }); // player 0 fires from (1,1)
+    click(0, { x: 1, y: 2 }); // and moves — case (c) from (1,1)
+    expect(game.players()[0].seenAt).toEqual({ x: 1, y: 1 });
+
+    game.apply({ kind: 'fire', player: 1, c: { x: 1, y: 2 } }); // a hit finds it
+    // The hit is the newer sighting, so it replaces the older exposure.
+    expect(game.players()[0].exposedAt).toEqual({ x: 1, y: 1 });
+    expect(game.possibleShipSquares(0)).toEqual([{ x: 1, y: 2 }]);
+  });
+
+  it('leaves the hunter\'s own square in when the odds are not the hunter\'s (rule 12.8)', () => {
+    // Player 0 fires from (1,1) and sails to (2,2); the hunter, player 1, sits
+    // at (0,0) — one of (1,1)'s neighbours, so it is a square player 0 cannot
+    // have gone to, and it counts for the hunter alone.
+    placeBothShips({ x: 1, y: 1 }, { x: 0, y: 0 });
+    click(1, { x: 3, y: 3 }); // player 0 fires, exposing (1,1)
+    click(0, { x: 2, y: 2 }); // and moves
+
+    const asHunter = game.possibleShipSquares(0, true);
+    const public_ = game.possibleShipSquares(0, false);
+    expect(public_).toContainEqual({ x: 0, y: 0 }); // the hunter's own square
+    expect(asHunter).not.toContainEqual({ x: 0, y: 0 });
+    expect(public_).toHaveLength(asHunter.length + 1);
+    // Which is exactly the square of difference between the two percentages.
+    expect(game.hitChance(0, true)).toBe(Math.round(100 / asHunter.length));
+    expect(game.hitChance(0, false)).toBe(Math.round(100 / public_.length));
+  });
+
+  it('never rules out the square the ship is actually on', () => {
+    // The whole deduction is worthless if it can exclude the truth, so play a
+    // long random game and assert the invariant on every single state.
+    let seed = 20260904;
+    const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2147483648) >>> 8) % n;
+    const pick = <T,>(xs: T[]): T => xs[rnd(xs.length)];
+
+    let checks = 0;
+    let pinned = 0;
+    for (let round = 0; round < 40; round++) {
+      game.apply({ kind: 'reset' });
+      game.apply({ kind: 'place', player: 0, c: { x: rnd(BOARD_W), y: rnd(BOARD_H) } });
+      game.apply({ kind: 'place', player: 1, c: { x: rnd(BOARD_W), y: rnd(BOARD_H) } });
+
+      for (let step = 0; step < 60 && game.phase() !== 'gameover'; step++) {
+        const p = game.currentPlayer();
+        for (const id of [0, 1] as PlayerId[]) {
+          const ship = game.players()[id].ship!;
+          // Both readings of C (rule 12.8) must contain the real square.
+          expect(game.possibleShipSquares(id, true)).toContainEqual(ship);
+          expect(game.possibleShipSquares(id, false)).toContainEqual(ship);
+          checks++;
+          if (game.possibleShipSquares(id, true).length === 1) pinned++;
+        }
+        if (game.phase() === 'fire') {
+          const shots = game.firableSquares(p);
+          if (!shots.length) break;
+          game.apply({ kind: 'fire', player: p, c: pick(shots) });
+        } else {
+          game.apply({ kind: 'move', player: p, c: pick(game.legalMoves(p)) });
+        }
+      }
+    }
+    // …and that the sweep really visited the states it claims to cover, rather
+    // than passing because every round ended on the first move.
+    expect(checks).toBeGreaterThan(400);
+    expect(pinned).toBeGreaterThan(0); // case (b) reached, not just (a) and (c)
+  });
+
   it('applies actions received from the opponent identically', () => {
     // What the joiner's device does with the host's mirrored actions.
     game.apply({ kind: 'place', player: 0, c: { x: 0, y: 0 } });

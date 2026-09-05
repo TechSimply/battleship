@@ -45,6 +45,25 @@ export interface PlayerState {
   shipDestroyed: boolean;
   /** Square the opponent saw when this player last fired (rule 5.2). */
   exposedAt: Coord | null;
+  /**
+   * Rule 12's `L`: the last square this ship was pinned to in public — the
+   * square it was seen firing from (rule 5.2) or the square a shell was seen
+   * finding it on (rule 6.2.1), whichever happened last. Null until it has
+   * been seen at all, which is the whole of rule 12's case (a).
+   *
+   * Not the same thing as `exposedAt`, which is the reticle the board draws and
+   * therefore only ever means "fired from here". A hit pins a ship just as hard
+   * and just as publicly, and it can pin one that has never fired a shot.
+   */
+  seenAt: Coord | null;
+  /**
+   * Rule 12's `moved`: whether rule 5.4 has since forced this ship off
+   * `seenAt`. Recorded when the move happens rather than deduced afterwards
+   * from the craters — a ship that fired with somewhere to go is provably not
+   * where it fired from, and one that fired with nowhere to go provably still
+   * is, and no later bombing can change either fact.
+   */
+  movedSinceSeen: boolean;
 }
 
 const idx = (c: Coord) => c.y * BOARD_W + c.x;
@@ -57,6 +76,8 @@ function emptyPlayer(): PlayerState {
     health: FULL_HEALTH,
     shipDestroyed: false,
     exposedAt: null,
+    seenAt: null,
+    movedSinceSeen: false,
   };
 }
 
@@ -180,32 +201,123 @@ export class GameService {
   }
 
   /**
-   * Squares where `player`'s ship could possibly be right now, deducible from
-   * public information alone — no peeking at the real `ship` field. Firing
-   * exposes the exact square (rule 5.2); after that the ship either had to
-   * move to a still-usable bordering square (rule 5.4) or, if none existed,
-   * never moved at all. Everything else is provably impossible — including
-   * the square the *asking* player is standing on, since a ship that had
-   * sailed into them would have rammed (rule 11). Used by the computer
-   * opponent, and to hint the same deduction to a human.
+   * Rule 12's `C`: every square `player`'s ship could still be on, deduced from
+   * public information alone — no peeking at the real `ship` field. Used by the
+   * computer opponent, to hint the same deduction to a human, and as the
+   * denominator of the odds.
+   *
+   * The three cases are rule 12.2's, and they are exhaustive:
+   *
+   *  (a) never seen — never fired (rule 5.2), never hit (rule 6.2.1): it is
+   *      still on the square its owner placed it on (rule 4), so anywhere on
+   *      the board. A bombed square is not a hiding place: a bomb that landed
+   *      on it was a hit, which would have pinned it into case (b).
+   *  (b) seen at `L` and not forced off it since: it is *on* `L`. Not a guess —
+   *      this is rule 5.4's cornered ship, which fired with every bordering
+   *      square already a crater and so did not move, and the instant after a
+   *      hit, before its owner's next turn.
+   *  (c) seen at `L` and forced to move (rule 5.4): it is on one of the squares
+   *      it was allowed to move to, and it is *not* on `L` any more — the
+   *      forced move takes a square away as well as adding eight.
+   *
+   * `U(L)` is measured against today's craters rather than the ones standing
+   * when it sailed, which is sound in both directions: `destroyed` only grows,
+   * and a square bombed since is a square either shown empty (a miss) or shown
+   * to hold the ship (a hit, which re-pins it at that square and puts it back
+   * into case (b) anyway).
+   *
+   * Rule 11 supplies the last exclusion in (a) and (c): the hunter's own
+   * square, which the hunted ship cannot be standing on because sailing into it
+   * would have ended the round. Only the hunter knows where they are, so pass
+   * `excludeHunter: false` for the count anyone may see (rule 12.8).
    */
-  possibleShipSquares(player: PlayerId): Coord[] {
+  possibleShipSquares(player: PlayerId, excludeHunter = true): Coord[] {
     const state = this.players()[player];
-    const hunter = this.players()[other(player)].ship;
+    const hunter = excludeHunter ? this.players()[other(player)].ship : null;
     const free = (c: Coord) => !hunter || !sameCell(c, hunter);
 
-    if (!state.exposedAt) {
-      const all: Coord[] = [];
-      const destroyed = this.destroyed();
-      for (let y = 0; y < BOARD_H; y++) {
-        for (let x = 0; x < BOARD_W; x++) {
-          if (!destroyed[y * BOARD_W + x] && free({ x, y })) all.push({ x, y });
-        }
+    // (b) Pinned: seen there, and nothing has made it move since.
+    if (state.seenAt && !state.movedSinceSeen) return [{ ...state.seenAt }];
+
+    // (c) Seen, then forced off it by rule 5.4.
+    if (state.seenAt) return this.neighborsOf(state.seenAt).filter(free);
+
+    // (a) Never seen at all.
+    const all: Coord[] = [];
+    const destroyed = this.destroyed();
+    for (let y = 0; y < BOARD_H; y++) {
+      for (let x = 0; x < BOARD_W; x++) {
+        if (!destroyed[y * BOARD_W + x] && free({ x, y })) all.push({ x, y });
       }
-      return all;
     }
-    const moved = this.neighborsOf(state.exposedAt).filter(free);
-    return moved.length > 0 ? moved : [state.exposedAt];
+    return all;
+  }
+
+  /**
+   * Rule 12's `F`: every square `shooter` may legally aim at — still usable
+   * (rules 5.1, 5.3) and not the one under their own keel (rule 2.3).
+   */
+  firableSquares(shooter: PlayerId): Coord[] {
+    const destroyed = this.destroyed();
+    const own = this.players()[shooter].ship;
+    const squares: Coord[] = [];
+    for (let y = 0; y < BOARD_H; y++) {
+      for (let x = 0; x < BOARD_W; x++) {
+        if (destroyed[y * BOARD_W + x]) continue;
+        if (own && own.x === x && own.y === y) continue;
+        squares.push({ x, y });
+      }
+    }
+    return squares;
+  }
+
+  /**
+   * Rule 12's `C ∩ F`: the squares of `possibleShipSquares()` a shot may
+   * actually be aimed at — still usable (rules 5.1, 5.3) and not the square
+   * under the hunter's own keel (rule 2.3).
+   *
+   * Only case (b) above can put a candidate out of reach, since the other two
+   * exclude craters already, and it does so exactly when a ship is pinned on
+   * its own crater: cornered by rule 5.4 on the square a hit left it standing
+   * on. Certain and untouchable at the same time (rule 12.5).
+   */
+  aimSquares(player: PlayerId, excludeHunter = true): Coord[] {
+    const destroyed = this.destroyed();
+    const hunter = excludeHunter ? this.players()[other(player)].ship : null;
+    return this.possibleShipSquares(player, excludeHunter).filter(
+      (c) => !destroyed[idx(c)] && (!hunter || !sameCell(c, hunter)),
+    );
+  }
+
+  /**
+   * Rule 12: the chance, in percent, that the next shot aimed at `player`
+   * finds them.
+   *
+   *     chance = 1 / |C|   when C and F share a square
+   *     chance = 0         otherwise
+   *
+   * A shot goes to one square (rule 5.1) and the ship is on one of `C`'s, each
+   * as likely as the next (rule 12.4) — so a shot into `C` is worth one square
+   * in however many there are, and one outside it is worth nothing. It stays
+   * `1 / |C|` and not `1 / |C ∩ F|` when some of `C` is out of reach: the ship
+   * may be standing on a square no shot can be aimed at, and that possibility
+   * is a way to miss, not a candidate to strike off. When *every* square it
+   * could be on is out of reach there is no shot to take and the odds are 0,
+   * however certain the deduction is (rule 12.5).
+   *
+   * `asHunter` says whether the player being told this is the one holding the
+   * gun. They are, for their own odds: they know their own square, so rule 11
+   * counts it out and the percentage matches the squares the board highlights
+   * for them. They are not for the odds shown on the *enemy's* health bar,
+   * where counting that one square out would publish the enemy's position in
+   * the percentage (rule 12.8) — so those are counted from public state alone,
+   * which can understate the enemy's gun by a square. Understating the danger
+   * is the safe way round of that trade.
+   */
+  hitChance(player: PlayerId, asHunter: boolean): number {
+    const c = this.possibleShipSquares(player, asHunter).length;
+    if (c === 0 || this.aimSquares(player, asHunter).length === 0) return 0;
+    return Math.round(100 / c);
   }
 
   /** Reset the round for a rematch; the session score is kept (rule 8). */
@@ -267,6 +379,15 @@ export class GameService {
         next[idx(c)] = true;
         return next;
       });
+      // Rule 6.2.1 is a sighting, not just a scar: everyone watched the shell
+      // find a ship on this square, so rule 12 pins it here — case (b) — until
+      // its owner's own next shot moves it on. It can pin a ship that has never
+      // fired, which no amount of reading the craters afterwards could.
+      this.updatePlayer(enemy, (p) => ({
+        ...p,
+        seenAt: { ...c },
+        movedSinceSeen: false,
+      }));
     }
 
     // Rule 5.3: the crater is dead for both ships now.
@@ -289,8 +410,14 @@ export class GameService {
       return true;
     }
 
-    // Rule 5.2: firing exposes the square it was fired from.
-    this.updatePlayer(shooter, (p) => ({ ...p, exposedAt: p.ship ? { ...p.ship } : null }));
+    // Rule 5.2: firing exposes the square it was fired from — which is rule
+    // 12's other kind of sighting, and the one that supersedes an older hit.
+    this.updatePlayer(shooter, (p) => ({
+      ...p,
+      exposedAt: p.ship ? { ...p.ship } : null,
+      seenAt: p.ship ? { ...p.ship } : p.seenAt,
+      movedSinceSeen: false,
+    }));
 
     // Rule 5.4: the shooter must move, if any usable square borders it.
     // Boxed in — every bordering square a crater — it simply stays put and the
@@ -331,7 +458,15 @@ export class GameService {
     // on fans the flames. An untouched ship moves for free.
     this.updatePlayer(player, (p) => {
       const health = p.health < FULL_HEALTH ? Math.max(p.health - BURN_PER_MOVE, 0) : p.health;
-      return { ...p, ship: c, health, shipDestroyed: p.shipDestroyed || health === 0 };
+      // Rule 12's `moved`: rule 5.4 has taken this ship off the square it was
+      // last seen on, so that square is now the one square it cannot be on.
+      return {
+        ...p,
+        ship: c,
+        health,
+        shipDestroyed: p.shipDestroyed || health === 0,
+        movedSinceSeen: true,
+      };
     });
 
     // Rule 6.6: burning down to 0% loses the game for its owner.

@@ -63,6 +63,13 @@ interface GaugeVM {
   ships: number;
   /** This ship was just hit — the gauge takes the blow with it. */
   struck: boolean;
+  /**
+   * Rule 12: the chance this ship's next shot finds its target, in percent —
+   * and null whenever this gun is not the one aiming, which is every phase but
+   * its own turn to fire (rule 12.7). Only ever one of the two gauges carries a
+   * number, so the board never shows two odds at once.
+   */
+  aim: number | null;
 }
 
 /**
@@ -289,6 +296,16 @@ export class Game {
   /** Rule 2.3: one united board, seen from this device's point of view. */
   protected readonly cells = computed<CellVM[]>(() => this.buildCells());
 
+  /**
+   * Rule 12: what this device's next shot is worth — one square out of the
+   * ones the enemy could still be on, which is exactly the set the board
+   * highlights while aiming. Counted as the hunter, since you know your own
+   * square (rule 12.8).
+   */
+  protected readonly myAim = computed(() =>
+    this.game.hitChance(this.session.myPlayer() === 0 ? 1 : 0, true),
+  );
+
   /** Rule 10: both healths, side by side above the board. */
   protected readonly gauges = computed<GaugeVM[]>(() => {
     const me = this.session.myPlayer();
@@ -320,7 +337,15 @@ export class Game {
           ? 'Waiting for your opponent to place their ship…'
           : 'Tap a square to place your ship';
       case 'fire':
-        return this.myTurn() ? 'Fire! Tap a square' : 'Enemy is taking aim…';
+        // Rule 12.6: the prompt that asks for the shot says what the shot is
+        // worth, so the odds are in front of the player while they aim. Rule
+        // 12.5's nothing-to-shoot-at is worth saying in words: a bare 0% next
+        // to an empty board reads as a bug rather than as an enemy sitting
+        // where rule 5.3 says nobody may bomb.
+        if (!this.myTurn()) return 'Enemy is taking aim…';
+        return this.myAim() > 0
+          ? `Fire! Tap a square — ${this.myAim()}% to hit`
+          : 'Fire! Tap a square — they are pinned on a crater, 0% to hit';
       case 'move': {
         const shot = this.game.lastShot();
         if (!this.myTurn()) {
@@ -356,6 +381,7 @@ export class Game {
 
   private buildGauge(id: PlayerId, mine: boolean): GaugeVM {
     const state = this.game.players()[id];
+    const phase = this.game.phase();
     return {
       mine,
       struck: this.impact()?.victim === id,
@@ -363,6 +389,16 @@ export class Game {
       health: state.health,
       color: healthColor(state.health),
       ships: state.shipDestroyed ? 0 : 1,
+      // Rule 12.7: this bar carries the odds of the gun it belongs to, and only
+      // while that gun is taking aim — so the enemy's chance of finding you is
+      // read off their bar on their turn, exactly as yours is read off your own
+      // on yours, and never both at once. `mine` doubles as rule 12.8's "does
+      // this player know where the shooter is standing" — for your own gun, you
+      // do.
+      aim:
+        phase === 'fire' && this.game.currentPlayer() === id
+          ? this.game.hitChance(id === 0 ? 1 : 0, mine)
+          : null,
     };
   }
 
@@ -381,16 +417,22 @@ export class Game {
     const moveTargets =
       this.game.phase() === 'move' && this.myTurn() ? this.game.legalMoves(me) : [];
 
-    // Where the enemy ship must be, deduced from public state alone: firing
-    // exposed their square (rule 5.2) and the forced move (rule 5.4) put them
-    // on one of its usable neighbours. The bot already fires by this same
-    // deduction, so showing it just spares the player the arithmetic — it
-    // reveals nothing they could not work out from the board. Only while
-    // choosing a shot, and only once they have fired: before that every
-    // unbombed square qualifies and the highlight would be noise.
+    // Where the enemy ship must be, deduced from public state alone (rule
+    // 12.2): a shot exposed their square (rule 5.2) or a shell was seen finding
+    // them on it (rule 6.2.1), and the forced move (rule 5.4) either put them
+    // on one of its usable neighbours or, with nowhere to go, left them on it.
+    // The bot already fires by this same deduction, so showing it just spares
+    // the player the arithmetic — it reveals nothing they could not work out
+    // from the board. Only while choosing a shot, and only once the ship has
+    // been seen at all: before that every unbombed square qualifies and the
+    // highlight would be noise.
+    //
+    // `aimSquares` and not the raw deduction, so nothing is marked that no shot
+    // may be aimed at — a ship pinned on its own crater (rule 12.5) is drawn as
+    // no hint at all, which is what its 0% says too.
     const hints =
-      this.game.phase() === 'fire' && this.myTurn() && foeState.exposedAt
-        ? this.game.possibleShipSquares(foe)
+      this.game.phase() === 'fire' && this.myTurn() && foeState.seenAt
+        ? this.game.aimSquares(foe)
         : [];
 
     const at = (c: Coord | null, x: number, y: number) => !!c && c.x === x && c.y === y;
