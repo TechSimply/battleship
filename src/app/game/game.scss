@@ -490,10 +490,16 @@ $own-trail-life: 1s;
     }
   }
 
-  // Rule 12.7: this gun's odds, under the health of the ship that fires it.
-  // Steel-blue and quiet while it is the other side's turn; it takes the ship's
-  // own colour and lights up while this is the gun taking aim, so the two bars
-  // between them say who is shooting and how well they can see.
+  // Rule 12.7: this gun's odds, under the health of the ship that fires it —
+  // painted only while this is the gun taking aim, so exactly one of the two
+  // bars carries a number at any moment and it is always the one about to
+  // shoot. It wears the ship's own colour, like everything else on the bar.
+  //
+  // `.idle` hides it rather than removing it: the empty row still occupies its
+  // line, so both gauges stay the same height whoever's turn it is and the
+  // measured panel chrome never changes — a row that came and went would refit
+  // the board under the player's thumb twice a turn. `visibility` also takes it
+  // out of the accessibility tree, so a screen reader is not read a stray "%".
   .gauge-aim {
     display: flex;
     align-items: center;
@@ -503,21 +509,19 @@ $own-trail-life: 1s;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #86a6bf;
-    transition: color 0.25s ease;
+    color: var(--ship-color, #{$fleet-green});
 
-    &.aiming {
-      color: var(--ship-color, #{$fleet-green});
+    &.idle {
+      visibility: hidden;
+    }
 
-      .aim-icon {
-        opacity: 1;
-        filter: drop-shadow(0 0 4px currentColor);
-        animation: aim-pulse 1.5s ease-in-out infinite;
-      }
+    .aim-icon {
+      filter: drop-shadow(0 0 4px currentColor);
+      animation: aim-pulse 1.5s ease-in-out infinite;
+    }
 
-      .aim-value {
-        text-shadow: 0 0 8px currentColor;
-      }
+    .aim-value {
+      text-shadow: 0 0 8px currentColor;
     }
   }
 
@@ -525,7 +529,6 @@ $own-trail-life: 1s;
     width: 1.05em;
     height: 1.05em;
     flex: none;
-    opacity: 0.7;
   }
 
   .aim-label {
@@ -1474,7 +1477,7 @@ $own-trail-life: 1s;
   .fire-ghost,
   .gauge.struck,
   // The odds are a number, not a heartbeat: keep the colour, drop the breathing.
-  .gauge-aim.aiming .aim-icon,
+  .gauge-aim .aim-icon,
   .ram-rammer,
   .ram-victim,
   .ram-burst,

@@ -156,20 +156,21 @@ still a square the ship may be hiding on, so it is one more way to miss, not one
 candidate.
 12.6. The number is on screen while the player is aiming: the prompt that asks for the shot
 carries it, so a player knows what the shot is worth before taking it.
-12.7. Both odds are shown, each on its own health bar (rule 10): your own gun's chance sits on
-your bar and the enemy gun's chance on theirs, so you can see how well they can see you at the
-same time as how well you can see them. The bar it sits on lights up while that gun is the one
-aiming.
-12.7.1. The odds are read off the board as it stands at that moment, not as it will stand when
-the shot is finally taken. So between firing and moving a player is pinned by case (b) on the
-square they fired from (rule 5.2) and the enemy's bar reads 100% - not a prediction that they
-are about to be hit, but the plainest statement of why rule 5.4 makes them move.
+12.7. The odds belong to a gun, so they are shown on that gun's own health bar (rule 10) and
+only while that gun is the one aiming. One number on screen at a time, on whichever side is
+about to shoot: on your turn you read what your own shot is worth, on theirs you watch how well
+they can see you. Nothing is shown while ships are being placed, while a ship is moving after
+its shot, or once the round is over - nobody is aiming then. The empty row keeps its place on
+the bar rather than disappearing, so the board below does not resize twice a turn.
+12.7.1. The odds are read off the board as it stands at the moment of aiming, not as it stood
+when the last shot was fired. So a ship that fired with nowhere to go (rule 5.4) is still
+pinned on the square it fired from when its enemy comes to aim, and that enemy's bar reads
+100% - which is the plainest statement there is of why rule 5.4 makes a ship move.
 12.8. The odds must give away nothing the board does not. The hunter's own square is the one
 square of C that depends on where the hunter is, and a hunter knows that, so a player's own
 odds count it out and match the squares the board highlights for them. The enemy's odds are
 counted from public state alone (C = B - D and C = U(L) with nothing taken out): the one square
 of difference, read off the percentage on their health bar, would say they are standing next to
 the square you last fired from.
-12.9. Before anybody has been seen, every usable square but the hunter's own qualifies, so a
-round opens at 1 in 19. When the round is over there is nothing left to aim at and the odds
-come off the bars.
+12.9. Before anybody has been seen, every usable square but the hunter's own qualifies, so the
+first shot of a round is aimed at 1 in 19.

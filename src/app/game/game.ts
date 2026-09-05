@@ -64,12 +64,12 @@ interface GaugeVM {
   /** This ship was just hit — the gauge takes the blow with it. */
   struck: boolean;
   /**
-   * Rule 12: the chance this ship's next shot finds its target, in percent.
-   * Null once the round is over — there is nothing left to aim at (rule 12.9).
+   * Rule 12: the chance this ship's next shot finds its target, in percent —
+   * and null whenever this gun is not the one aiming, which is every phase but
+   * its own turn to fire (rule 12.7). Only ever one of the two gauges carries a
+   * number, so the board never shows two odds at once.
    */
   aim: number | null;
-  /** Rule 12.7: this is the gun currently taking aim — light the bar up. */
-  aiming: boolean;
 }
 
 /**
@@ -389,12 +389,16 @@ export class Game {
       health: state.health,
       color: healthColor(state.health),
       ships: state.shipDestroyed ? 0 : 1,
-      // Rule 12.7: this bar carries the odds of the gun it belongs to, so the
-      // enemy's chance of finding you is read off their bar exactly as yours is
-      // read off your own. `mine` doubles as rule 12.8's "does this player know
-      // where the shooter is standing" — for your own gun, you do.
-      aim: phase === 'gameover' ? null : this.game.hitChance(id === 0 ? 1 : 0, mine),
-      aiming: phase === 'fire' && this.game.currentPlayer() === id,
+      // Rule 12.7: this bar carries the odds of the gun it belongs to, and only
+      // while that gun is taking aim — so the enemy's chance of finding you is
+      // read off their bar on their turn, exactly as yours is read off your own
+      // on yours, and never both at once. `mine` doubles as rule 12.8's "does
+      // this player know where the shooter is standing" — for your own gun, you
+      // do.
+      aim:
+        phase === 'fire' && this.game.currentPlayer() === id
+          ? this.game.hitChance(id === 0 ? 1 : 0, mine)
+          : null,
     };
   }
 

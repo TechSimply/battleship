@@ -37,9 +37,10 @@ The authoritative spec is [`Documentation/game-logic.txt`](Documentation/game-lo
   never seen: the whole board bar craters and the hunter's own square; **seen and not since
   forced to move: that one square** (rule 5.4's cornered ship, and the moment after a hit);
   seen and forced to move: the usable neighbours of where it was seen, *minus* the square
-  itself. A hit is a sighting as much as a shot is (rule 6.2.1). Both guns' odds are on
-  screen, each on its own ship's health bar, and the bar of whoever is aiming lights up; the
-  fire prompt carries the number too. Your own odds count the hunter's exclusion (your square,
+  itself. A hit is a sighting as much as a shot is (rule 6.2.1). The odds show on the health
+  bar of the gun they belong to and **only while that gun is aiming** — one number on screen at
+  a time, yours on your fire turn and theirs on theirs, never both; the fire prompt carries
+  your number too. Your own odds count the hunter's exclusion (your square,
   which the enemy cannot be on); the enemy's are counted from public state alone, or the
   missing square would give their position away (rule 12.8).
 - **Sessions (rule 7):** a lobby offers *New Game* / *Join The Game*. New Game claims the
