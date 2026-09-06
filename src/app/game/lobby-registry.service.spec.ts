@@ -1,5 +1,11 @@
-import { isPartyPresent, isSessionAlive, SessionRecord, toAction, toWire } from './lobby-registry.service';
-import { GameAction } from './game.service';
+import {
+  isPartyPresent,
+  isSessionAlive,
+  roundId,
+  SessionRecord,
+  toAction,
+} from './lobby-registry.service';
+import { Coord } from './game.service';
 
 /** Rule 9.2 link lifetimes, mirrored from the service for readable tests. */
 const MIN = 60_000;
@@ -121,39 +127,98 @@ describe('isPartyPresent (opponent-left signal)', () => {
 });
 
 /**
- * The move log is the game, and anyone who knows a game number can write to
- * it — the database has no accounts. So what comes back off it is parsed, not
- * trusted: a junk record is skipped rather than fed to the rules engine.
+ * The log is the game, and what comes back off it is parsed rather than
+ * trusted: a junk entry is skipped instead of being fed to the rules engine.
+ * Note what is *not* in an entry — a `place` or a `move` never carries a
+ * square. That is the anti-cheat: where a ship went is between its owner and
+ * the database, and `own` is how this device gets its own squares back.
  */
-describe('toAction / toWire (the move log)', () => {
-  const roundTrip = (a: GameAction) => toAction(toWire(a));
+describe('toAction (the log)', () => {
+  const mine = (c: Coord | null) => () => c;
+  const nobody = () => null;
 
-  it('carries every kind of action there and back', () => {
-    const actions: GameAction[] = [
-      { kind: 'place', player: 0, c: { x: 0, y: 0 } },
-      { kind: 'fire', player: 1, c: { x: 3, y: 4 } },
-      { kind: 'move', player: 1, c: { x: 2, y: 1 } },
-      { kind: 'reset' },
-    ];
-    for (const a of actions) expect(roundTrip(a)).toEqual(a);
+  it('reads a placement without giving the square away', () => {
+    const raw = { p: 1, k: 'place', r: 'r', e: 0, ram: false };
+    expect(toAction(raw, nobody)).toEqual({ kind: 'place', player: 1, c: null, ram: false });
+    // …unless it is our own, which we can fill in from our own secret.
+    expect(toAction(raw, mine({ x: 2, y: 3 }))).toEqual({
+      kind: 'place',
+      player: 1,
+      c: { x: 2, y: 3 },
+      ram: false,
+    });
   });
 
-  it('refuses anything that is not a move', () => {
-    expect(toAction(null)).toBeNull();
-    expect(toAction('place')).toBeNull();
-    expect(toAction({})).toBeNull();
-    expect(toAction({ k: 'explode', p: 0, x: 1, y: 1 })).toBeNull();
+  it('reads a move the same way, and a ram with the square both wrecks share', () => {
+    expect(toAction({ p: 0, k: 'move', r: 'r', e: 4, oe: 3, ram: false }, nobody)).toEqual({
+      kind: 'move',
+      player: 0,
+      c: null,
+      ram: false,
+    });
+    expect(
+      toAction({ p: 0, k: 'move', r: 'r', e: 4, oe: 3, ram: true, x: 1, y: 1 }, nobody),
+    ).toEqual({ kind: 'move', player: 0, c: { x: 1, y: 1 }, ram: true });
   });
 
-  it('refuses a move that would land off the board', () => {
-    expect(toAction({ k: 'fire', p: 0, x: 4, y: 0 })).toBeNull();
-    expect(toAction({ k: 'fire', p: 0, x: 0, y: 5 })).toBeNull();
-    expect(toAction({ k: 'fire', p: 0, x: -1, y: 0 })).toBeNull();
-    expect(toAction({ k: 'fire', p: 0, x: 1.5, y: 0 })).toBeNull();
+  it('reads a shot with both of its squares and the answer to it', () => {
+    expect(
+      toAction({ p: 0, k: 'fire', r: 'r', e: 1, te: 1, x: 3, y: 4, fx: 0, fy: 0, hit: true }, nobody),
+    ).toEqual({
+      kind: 'fire',
+      player: 0,
+      from: { x: 0, y: 0 },
+      to: { x: 3, y: 4 },
+      hit: true,
+    });
   });
 
-  it('refuses a move from a player who does not exist', () => {
-    expect(toAction({ k: 'fire', p: 2, x: 1, y: 1 })).toBeNull();
-    expect(toAction({ k: 'fire', x: 1, y: 1 })).toBeNull();
+  it('reads the skipped move, the reveal and the rematch', () => {
+    expect(toAction({ p: 1, k: 'stay', r: 'r', e: 2 }, nobody)).toEqual({
+      kind: 'stay',
+      player: 1,
+    });
+    expect(toAction({ p: 1, k: 'reveal', r: 'r', e: 2, x: 0, y: 1 }, nobody)).toEqual({
+      kind: 'reveal',
+      player: 1,
+      c: { x: 0, y: 1 },
+    });
+    expect(toAction({ p: 0, k: 'reset', r: 'r' }, nobody)).toEqual({ kind: 'reset' });
+  });
+
+  it('refuses anything that is not an entry', () => {
+    expect(toAction(null, nobody)).toBeNull();
+    expect(toAction('place', nobody)).toBeNull();
+    expect(toAction({}, nobody)).toBeNull();
+    expect(toAction({ k: 'explode', p: 0, r: 'r', e: 0 }, nobody)).toBeNull();
+    expect(toAction({ k: 'place', p: 0, e: 0, ram: false }, nobody)).toBeNull(); // no round
+  });
+
+  it('refuses a square that would land off the board', () => {
+    const fire = (x: number, y: number) =>
+      toAction({ p: 0, k: 'fire', r: 'r', e: 0, te: 0, x, y, fx: 0, fy: 0, hit: false }, nobody);
+    expect(fire(4, 0)).toBeNull();
+    expect(fire(0, 5)).toBeNull();
+    expect(fire(-1, 0)).toBeNull();
+    expect(fire(1.5, 0)).toBeNull();
+  });
+
+  it('refuses an entry from a player who does not exist', () => {
+    expect(toAction({ p: 2, k: 'stay', r: 'r', e: 0 }, nobody)).toBeNull();
+    expect(toAction({ k: 'stay', r: 'r', e: 0 }, nobody)).toBeNull();
+  });
+
+  it('refuses an answer it cannot check: a ram with nowhere to draw the wrecks', () => {
+    expect(toAction({ p: 0, k: 'move', r: 'r', e: 1, oe: 0, ram: true }, nobody)).toBeNull();
+    expect(toAction({ p: 0, k: 'move', r: 'r', e: 1, oe: 0 }, nobody)).toBeNull();
+  });
+});
+
+describe('roundId', () => {
+  it('names a round by the session it belongs to and the reset that opened it', () => {
+    // A recycled game number never lands on the last game's secrets, and a
+    // rematch starts a namespace of its own.
+    expect(roundId(1700000000000)).toBe('1700000000000_0');
+    expect(roundId(1700000000000, 'k0007')).toBe('1700000000000_k0007');
   });
 });

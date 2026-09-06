@@ -6,7 +6,9 @@
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test"
+    "test": "ng test",
+    "rules": "node tools/rules.mjs",
+    "test:rules": "npx -y firebase-tools@13 emulators:exec --only database --project battleship-p2p \"node tools/test-rules.mjs\""
   },
   "private": true,
   "packageManager": "npm@11.3.0",

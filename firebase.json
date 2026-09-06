@@ -44,6 +44,12 @@
       }
     ]
   },
+  "//": "Local emulators. Gameplay needs a signed-in account now, so the auth emulator has to be declared here or `emulators:start` quietly skips it and every write is refused.",
+  "emulators": {
+    "auth": { "port": 9099 },
+    "database": { "port": 9000 },
+    "singleProjectMode": true
+  },
   "database": {
     "rules": "database.rules.json"
   }

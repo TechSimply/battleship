@@ -1,34 +1,141 @@
 {
   "rules": {
     "sessions": {
-      "$gameNumber": {
-        ".read": true,
-        ".write": "data.child('terminated').val() != true",
-        ".validate": "$gameNumber.matches(/^[0-9]{1,4}$/)",
-        "createdAt": { ".validate": "newData.isNumber() && newData.val() <= now" },
-        "hostAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
-        "joinerAt": { ".validate": "(newData.isNumber() && newData.val() <= now) || newData.val() == null" },
-        "joined": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true || newData.parent().child('createdAt').val() >= now - 5000)" },
-        "terminated": { ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)" },
-        "hostId": { ".validate": "newData.isString() && newData.val().length <= 64" },
-        "joinerId": { ".validate": "newData.isString() && newData.val().length <= 64" },
+      "$n": {
+        ".read": "auth != null",
+        ".write": "auth != null && (newData.val() == null ? (auth != null && (auth.uid == data.child('hostId').val() || auth.uid == data.child('joinerId').val())) : (!data.exists() || data.child('terminated').val() != true && (data.child('joined').val() == true && now - data.child('createdAt').val() > 10800000 && (!data.child('hostAt').exists() || now - data.child('hostAt').val() > 10800000) && (!data.child('joinerAt').exists() || now - data.child('joinerAt').val() > 10800000) || data.child('joined').val() != true && now - data.child('createdAt').val() > 600000 && (!data.child('hostAt').exists() || now - data.child('hostAt').val() > 600000) && (!data.child('joinerAt').exists() || now - data.child('joinerAt').val() > 600000))))",
+        ".validate": "$n.matches(/^[0-9]{1,4}$/)",
+        "createdAt": {
+          ".validate": "newData.isNumber() && newData.val() <= now"
+        },
+        "hostAt": {
+          ".write": "auth != null && auth.uid == newData.parent().child('hostId').val()",
+          ".validate": "newData.isNumber() && newData.val() <= now"
+        },
+        "joinerAt": {
+          ".write": "auth != null && auth.uid == newData.parent().child('joinerId').val()",
+          ".validate": "newData.isNumber() && newData.val() <= now"
+        },
+        "joined": {
+          ".write": "auth != null && newData.val() == true",
+          ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)"
+        },
+        "terminated": {
+          ".write": "(auth != null && (auth.uid == data.child('hostId').val() || auth.uid == data.child('joinerId').val()))",
+          ".validate": "newData.isBoolean() && (data.val() != true || newData.val() == true)"
+        },
+        "hostId": {
+          ".validate": "newData.isString() && newData.val() == auth.uid"
+        },
+        "joinerId": {
+          ".write": "auth != null && !data.exists()",
+          ".validate": "newData.isString() && newData.val() == auth.uid && root.child('sessions/' + $n + '/' + 'hostId').val() != auth.uid"
+        },
         "moves": {
-          "$moveId": {
-            ".validate": "!data.exists() && newData.hasChild('k')",
-            "k": { ".validate": "newData.isString() && newData.val().matches(/^(place|fire|move|reset)$/)" },
-            "p": { ".validate": "newData.isNumber() && (newData.val() == 0 || newData.val() == 1)" },
-            "x": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3" },
-            "y": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4" },
-            "$otherMoveField": { ".validate": false }
+          "$key": {
+            ".write": "(auth != null && (root.child('sessions/' + $n + '/' + 'hostId').val() == auth.uid || root.child('sessions/' + $n + '/' + 'joinerId').val() == auth.uid)) && !data.exists() && (newData.child('p').val() == (root.child('sessions/' + $n + '/' + 'hostId').val() == auth.uid ? 0 : 1) || newData.child('k').val() == 'fire' && root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + newData.child('x').val() + '_' + newData.child('y').val()).child('by').val() == newData.child('p').val())",
+            ".validate": "newData.hasChildren(['p', 'k', 'r']) && (newData.child('k').val() == 'reset' || newData.child('k').val() == 'place' && newData.hasChildren(['e', 'ram']) && newData.child('e').val() == 0 && (newData.child('ram').val() == true && newData.hasChildren(['x', 'y']) || newData.child('ram').val() == false && !newData.hasChild('x') && !newData.hasChild('y')) || newData.child('k').val() == 'fire' && newData.hasChildren(['e', 'te', 'x', 'y', 'fx', 'fy', 'hit']) || newData.child('k').val() == 'move' && newData.hasChildren(['e', 'oe', 'ram']) && newData.child('e').val() >= 1 && (newData.child('ram').val() == true && newData.hasChildren(['x', 'y']) || newData.child('ram').val() == false && !newData.hasChild('x') && !newData.hasChild('y')) || newData.child('k').val() == 'stay' && newData.hasChildren(['e']) || newData.child('k').val() == 'reveal' && newData.hasChildren(['e', 'x', 'y'])) && (newData.child('k').val() == 'reset' || (newData.child('k').val() == 'place' || newData.child('k').val() == 'move' || newData.child('k').val() == 'reveal') && root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).exists() || newData.child('k').val() == 'stay' && root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).exists() && !root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val() + 1).exists() && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() < 1 || root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() < 1 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() - 1) + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() - 1)).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() < 1 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() - 1)).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() > 2 || root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() < 1 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() + 1) + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() - 1)).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() < 1 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() - 1) + '_' + root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val()).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() > 2 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() + 1) + '_' + root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val()).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() < 1 || root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() > 3 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() - 1) + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() + 1)).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() > 3 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() + 1)).exists()) && (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() > 2 || root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() > 3 || root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('x').val() + 1) + '_' + (root.child('secrets/' + $n + '/' + newData.child('r').val() + '/' + newData.child('p').val() + '/' + newData.child('e').val()).child('y').val() + 1)).exists()) || newData.child('k').val() == 'fire' && root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + newData.child('x').val() + '_' + newData.child('y').val()).child('by').val() == newData.child('p').val() && root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + newData.child('x').val() + '_' + newData.child('y').val()).child('e').val() == newData.child('e').val() && root.child('sessions/' + $n + '/' + 'craters/' + newData.child('r').val() + '/' + newData.child('x').val() + '_' + newData.child('y').val()).child('te').val() == newData.child('te').val())",
+            "p": {
+              ".validate": "(newData.val() == 0 || newData.val() == 1)"
+            },
+            "k": {
+              ".validate": "newData.val().matches(/^(place|fire|move|stay|reveal|reset)$/)"
+            },
+            "r": {
+              ".validate": "newData.isString() && newData.val().length <= 48"
+            },
+            "e": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+            },
+            "te": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+            },
+            "oe": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+            },
+            "x": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3 && (newData.parent().child('k').val() == 'fire' || newData.val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('x').val())"
+            },
+            "y": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4 && (newData.parent().child('k').val() == 'fire' || newData.val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('y').val())"
+            },
+            "fx": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3 && newData.val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('x').val()"
+            },
+            "fy": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4 && newData.val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('y').val()"
+            },
+            "hit": {
+              ".validate": "newData.isBoolean() && newData.val() == (root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('te').val()).child('x').val() == newData.parent().child('x').val() && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('te').val()).child('y').val() == newData.parent().child('y').val())"
+            },
+            "ram": {
+              ".validate": "newData.isBoolean() && (newData.parent().child('k').val() == 'place' && newData.val() == (root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + 0).exists() && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + 0).child('x').val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('x').val() && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + 0).child('y').val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('y').val()) || newData.parent().child('k').val() == 'move' && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('oe').val()).exists() && !root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('oe').val() + 1).exists() && newData.val() == (root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('oe').val()).exists() && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('oe').val()).child('x').val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('x').val() && root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + (newData.parent().child('p').val() == 0 ? 1 : 0) + '/' + newData.parent().child('oe').val()).child('y').val() == root.child('secrets/' + $n + '/' + newData.parent().child('r').val() + '/' + newData.parent().child('p').val() + '/' + newData.parent().child('e').val()).child('y').val()))"
+            },
+            "$otherMoveField": {
+              ".validate": false
+            }
           }
         },
-        "$other": { ".validate": false }
+        "craters": {
+          "$r": {
+            "$sq": {
+              ".write": "(auth != null && (root.child('sessions/' + $n + '/' + 'hostId').val() == auth.uid || root.child('sessions/' + $n + '/' + 'joinerId').val() == auth.uid)) && !data.exists()",
+              ".validate": "newData.hasChildren(['by', 'e', 'te', 'x', 'y']) && $sq == newData.child('x').val() + '_' + newData.child('y').val() && newData.child('by').val() == (root.child('sessions/' + $n + '/' + 'hostId').val() == auth.uid ? 0 : 1) && root.child('secrets/' + $n + '/' + $r + '/' + newData.child('by').val() + '/' + newData.child('e').val()).exists() && !root.child('secrets/' + $n + '/' + $r + '/' + newData.child('by').val() + '/' + newData.child('e').val() + 1).exists() && root.child('secrets/' + $n + '/' + $r + '/' + (newData.child('by').val() == 0 ? 1 : 0) + '/' + newData.child('te').val()).exists() && !root.child('secrets/' + $n + '/' + $r + '/' + (newData.child('by').val() == 0 ? 1 : 0) + '/' + newData.child('te').val() + 1).exists() && !(root.child('secrets/' + $n + '/' + $r + '/' + newData.child('by').val() + '/' + newData.child('e').val()).child('x').val() == newData.child('x').val() && root.child('secrets/' + $n + '/' + $r + '/' + newData.child('by').val() + '/' + newData.child('e').val()).child('y').val() == newData.child('y').val())",
+              "by": {
+                ".validate": "(newData.val() == 0 || newData.val() == 1)"
+              },
+              "e": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+              },
+              "te": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+              },
+              "x": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3"
+              },
+              "y": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4"
+              },
+              "$otherCraterField": {
+                ".validate": false
+              }
+            }
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
+    "secrets": {
+      "$n": {
+        "$round": {
+          "$seat": {
+            ".read": "auth != null && auth.uid == root.child('sessions/' + $n + '/' + ($seat == '0' ? 'hostId' : 'joinerId')).val()",
+            "$e": {
+              ".write": "auth != null && auth.uid == root.child('sessions/' + $n + '/' + ($seat == '0' ? 'hostId' : 'joinerId')).val() && !data.exists()",
+              ".validate": "newData.hasChildren(['x', 'y', 'e']) && $e == newData.child('e').val() + '' && !root.child('sessions/' + $n + '/' + 'craters/' + $round + '/' + newData.child('x').val() + '_' + newData.child('y').val()).exists() && (newData.child('e').val() == 0 || root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).exists() && (newData.child('x').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('x').val()) >= -1 && (newData.child('x').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('x').val()) <= 1 && (newData.child('y').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('y').val()) >= -1 && (newData.child('y').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('y').val()) <= 1 && ((newData.child('x').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('x').val()) != 0 || (newData.child('y').val() - root.child('secrets/' + $n + '/' + $round + '/' + $seat + '/' + (newData.child('e').val() - 1)).child('y').val()) != 0))",
+              "x": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3"
+              },
+              "y": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 4"
+              },
+              "e": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999"
+              },
+              "$otherShipField": {
+                ".validate": false
+              }
+            }
+          }
+        }
       }
     },
     "stats": {
       ".read": true,
       "$metric": {
-        ".write": true,
+        ".write": "auth != null",
         ".validate": "$metric.matches(/^[a-zA-Z]{1,24}$/) && newData.isNumber() && (!data.exists() || newData.val() > data.val())"
       }
     }
