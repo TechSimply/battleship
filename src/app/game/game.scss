@@ -489,6 +489,69 @@ $own-trail-life: 1s;
       box-shadow: none;
     }
   }
+
+  // Rule 12.7: this gun's odds, under the health of the ship that fires it —
+  // painted only while this is the gun taking aim, so exactly one of the two
+  // bars carries a number at any moment and it is always the one about to
+  // shoot. It wears the ship's own colour, like everything else on the bar.
+  //
+  // `.idle` hides it rather than removing it: the empty row still occupies its
+  // line, so both gauges stay the same height whoever's turn it is and the
+  // measured panel chrome never changes — a row that came and went would refit
+  // the board under the player's thumb twice a turn. `visibility` also takes it
+  // out of the accessibility tree, so a screen reader is not read a stray "%".
+  .gauge-aim {
+    display: flex;
+    align-items: center;
+    gap: 0.25em;
+    margin-top: 0.32em;
+    font-size: 0.6em;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ship-color, #{$fleet-green});
+
+    &.idle {
+      visibility: hidden;
+    }
+
+    .aim-icon {
+      filter: drop-shadow(0 0 4px currentColor);
+      animation: aim-pulse 1.5s ease-in-out infinite;
+    }
+
+    .aim-value {
+      text-shadow: 0 0 8px currentColor;
+    }
+  }
+
+  .aim-icon {
+    width: 1.05em;
+    height: 1.05em;
+    flex: none;
+  }
+
+  .aim-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .aim-value {
+    margin-left: auto;
+    padding-left: 0.3em;
+    font-size: 1.15em;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// The reticle breathes while its owner is choosing a square (rule 12.6).
+@keyframes aim-pulse {
+  50% {
+    transform: scale(1.18);
+  }
 }
 
 // Rule 10.5: how many ships this side still has — 1 all game, 0 once wrecked.
@@ -1413,6 +1476,8 @@ $own-trail-life: 1s;
   .hit-ghost,
   .fire-ghost,
   .gauge.struck,
+  // The odds are a number, not a heartbeat: keep the colour, drop the breathing.
+  .gauge-aim .aim-icon,
   .ram-rammer,
   .ram-victim,
   .ram-burst,

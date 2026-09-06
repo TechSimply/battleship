@@ -277,16 +277,22 @@ export class SessionService {
       case 'fire': {
         if (this.game.currentPlayer() !== 1) return;
         const from = this.game.players()[1].ship;
-        // Rule 5.2-5.4 narrow down where the ship provably can be; shoot
-        // randomly within that set instead of anywhere still unbombed.
-        const candidates = this.game
-          .possibleShipSquares(0)
-          .filter((c) => !from || c.x !== from.x || c.y !== from.y);
-        if (!from || !candidates.length) return;
-        const to = candidates[rnd(candidates.length)];
-        this.game.apply({ kind: 'fire', player: 1, from, to, hit: this.strikes(0, to) });
-        if (this.game.phase() === 'move' && !this.game.legalMoves(1).length) {
-          this.game.apply({ kind: 'stay', player: 1 });
+        if (!from) return;
+        // Rules 5.2-5.4 and 6.2.1 narrow down where the ship provably can be;
+        // shoot randomly within that set instead of anywhere still unbombed.
+        // `aimSquares` is that set less the squares no shot may be aimed at —
+        // it empties out when the ship is pinned on its own crater (rule 12.5),
+        // and the bot still owes the board a shot, so it falls back to any
+        // legal square rather than stalling the turn.
+        const candidates = this.game.aimSquares(0);
+        const shot = candidates.length ? candidates : this.game.firableSquares(1);
+        if (shot.length) {
+          const to = shot[rnd(shot.length)];
+          this.game.apply({ kind: 'fire', player: 1, from, to, hit: this.strikes(0, to) });
+          // Rule 5.4: boxed in, so it says so rather than sailing.
+          if (this.game.phase() === 'move' && !this.game.legalMoves(1).length) {
+            this.game.apply({ kind: 'stay', player: 1 });
+          }
         }
         break;
       }

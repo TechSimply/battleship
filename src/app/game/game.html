@@ -98,6 +98,32 @@
               <span class="gauge-tube">
                 <span class="gauge-fill" [class.empty]="gauge.health === 0" [style.width.%]="gauge.health"></span>
               </span>
+
+              <!-- Rule 12.7: the odds belong to a gun, so they ride on that
+                   gun's own bar and show only while it is the one aiming —
+                   one number on screen at a time, on whichever side is about
+                   to shoot. On your turn you read what your own shot is worth;
+                   on theirs you watch how well they can see you.
+                   The row keeps its place in the layout while it is empty
+                   (hidden, not removed), so the panel chrome is the same height
+                   every turn and `fitBoards()` has nothing to re-fit — a row
+                   that came and went would resize the board under the player's
+                   thumb twice a turn. -->
+              <span
+                [id]="(gauge.mine ? 'my' : 'enemy') + '-aim'"
+                class="gauge-aim"
+                [class.idle]="gauge.aim === null"
+                [attr.aria-hidden]="gauge.aim === null"
+                [attr.aria-label]="(gauge.mine ? 'Your' : 'Enemy') + ' chance to hit'"
+              >
+                <svg class="aim-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="7" />
+                  <path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" />
+                </svg>
+                <span class="aim-label">Hit chance</span>
+                <span class="aim-value">{{ gauge.aim }}%</span>
+              </span>
             </div>
           }
         </div>
